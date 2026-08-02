@@ -14,9 +14,9 @@ all-features = true
 
 [features]
 default = ["std"]
-std = ["skrifa/std", "peniko/std"]
+std = ["skrifa/std", "peniko/std", "vello_pixmap/std"]
 libm = ["skrifa/libm", "peniko/libm", "dep:core_maths"]
-png = ["std", "dep:png"]
+png = ["std", "vello_pixmap/png"]
 
 [lints]
 workspace = true
@@ -30,4 +30,4 @@ log = { workspace = true }
 peniko = { workspace = true }
 skrifa = { workspace = true }
 smallvec = { workspace = true }
-png = { workspace = true, optional = true }
+vello_pixmap = { workspace = true }

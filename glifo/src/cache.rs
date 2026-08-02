@@ -13,12 +13,12 @@
 //! `vello_common` provides an atlas-backed implementation of this trait that
 //! is shared by the Vello CPU and Vello Hybrid renderers.
 
-use crate::bitmap::GlyphPixmap;
 use crate::color::{AlphaColor, Srgb};
 use crate::glyph::{FontEmbolden, NormalizedCoord};
 use crate::interface::{DrawSink, GlyphRenderer};
 use crate::kurbo::{Affine, BezPath, Rect};
 use alloc::sync::Arc;
+use vello_pixmap::Pixmap;
 
 /// Premultiply and pack an RGBA color into a `u32` for bitwise hashing/comparison.
 #[inline]
@@ -103,7 +103,7 @@ pub struct OutlineGlyphData<'a> {
 #[derive(Debug)]
 pub struct BitmapGlyphData<'a> {
     /// The decoded pixel data.
-    pub pixmap: &'a Arc<GlyphPixmap>,
+    pub pixmap: &'a Arc<Pixmap>,
     /// The rectangular area that should be filled with the bitmap when painting.
     pub area: Rect,
 }

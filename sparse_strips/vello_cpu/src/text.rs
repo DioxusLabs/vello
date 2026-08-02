@@ -22,8 +22,8 @@ use alloc::vec::Vec;
 use color::palette::css::BLACK;
 use core::fmt::Debug;
 use core::ops::RangeInclusive;
+use glifo::Glyph;
 use glifo::{DrawSink, GlyphImage, GlyphPaint, GlyphRunBackend, NoCache};
-use glifo::{Glyph, GlyphPixmap};
 use kurbo::{Affine, BezPath, Rect};
 use peniko::BlendMode;
 use peniko::color::{AlphaColor, Srgb};
@@ -320,7 +320,7 @@ fn clear_pixmap_region(dst: &mut Pixmap, rect: PendingClearRect) {
 
 /// Copy bitmap glyph pixels into a rectangular region of an atlas page.
 fn copy_pixmap_to_atlas(
-    src: &GlyphPixmap,
+    src: &Pixmap,
     dst: &mut Pixmap,
     dst_x: u16,
     dst_y: u16,
@@ -332,7 +332,7 @@ fn copy_pixmap_to_atlas(
     let src_stride = src.width() as usize;
     let dst_stride = dst.width() as usize;
 
-    let src_data = src.data();
+    let src_data = src.data_as_u8_slice();
     let dst_data = dst.data_as_u8_slice_mut();
 
     for y in 0..copy_height {
@@ -427,9 +427,8 @@ impl glifo::GlyphRenderer for RenderContext {
 
     #[inline]
     fn set_paint_image(&mut self, image: GlyphImage) {
-        let pixmap = Arc::new(pixmap_from_glyph_pixmap(&image.pixmap));
         self.set_paint(Image {
-            image: ImageSource::Pixmap(pixmap),
+            image: ImageSource::Pixmap(image.pixmap),
             sampler: peniko::ImageSampler {
                 x_extend: peniko::Extend::Pad,
                 y_extend: peniko::Extend::Pad,
@@ -474,21 +473,6 @@ impl AtlasGlyphRenderer for RenderContext {
     fn atlas_paint_transform(&self, atlas_slot: &AtlasSlot) -> Affine {
         Affine::translate((-(atlas_slot.x as f64), -(atlas_slot.y as f64)))
     }
-}
-
-/// Convert a decoded glyph bitmap into a CPU pixmap (copies the pixel data).
-fn pixmap_from_glyph_pixmap(src: &GlyphPixmap) -> Pixmap {
-    let data = src
-        .data()
-        .chunks_exact(4)
-        .map(|c| color::PremulRgba8 {
-            r: c[0],
-            g: c[1],
-            b: c[2],
-            a: c[3],
-        })
-        .collect();
-    Pixmap::from_parts(data, src.width(), src.height())
 }
 
 /// Debug utilities for visualizing glyph bounds during rasterization.

@@ -12,10 +12,8 @@
 
 use core::ops::RangeInclusive;
 
-use alloc::sync::Arc;
-
 use crate::{AtlasId, Resources, Scene};
-use glifo::{DrawSink, Glyph, GlyphImage, GlyphPaint, GlyphPixmap, GlyphRunBackend, NoCache};
+use glifo::{DrawSink, Glyph, GlyphImage, GlyphPaint, GlyphRunBackend, NoCache};
 use peniko::BlendMode;
 use peniko::color::palette::css::BLACK;
 use peniko::color::{AlphaColor, Srgb};
@@ -28,7 +26,6 @@ use vello_common::kurbo::{Affine, BezPath, Rect};
 use vello_common::multi_atlas::AtlasConfig;
 use vello_common::paint::{Image, ImageSource, PaintType};
 use vello_common::peniko;
-use vello_common::pixmap::Pixmap;
 
 /// Glyph atlas cache for the hybrid (GPU) renderer.
 #[derive(Debug)]
@@ -315,9 +312,8 @@ impl glifo::GlyphRenderer for Scene {
 
     #[inline]
     fn set_paint_image(&mut self, image: GlyphImage) {
-        let pixmap = Arc::new(pixmap_from_glyph_pixmap(&image.pixmap));
         self.set_paint(Image {
-            image: ImageSource::Pixmap(pixmap),
+            image: ImageSource::Pixmap(image.pixmap),
             sampler: peniko::ImageSampler {
                 x_extend: peniko::Extend::Pad,
                 y_extend: peniko::Extend::Pad,
@@ -363,19 +359,4 @@ impl AtlasGlyphRenderer for Scene {
         let padding = GLYPH_PADDING as f64;
         Affine::translate((-padding, -padding))
     }
-}
-
-/// Convert a decoded glyph bitmap into a pixmap (copies the pixel data).
-fn pixmap_from_glyph_pixmap(src: &GlyphPixmap) -> Pixmap {
-    let data = src
-        .data()
-        .chunks_exact(4)
-        .map(|c| peniko::color::PremulRgba8 {
-            r: c[0],
-            g: c[1],
-            b: c[2],
-            a: c[3],
-        })
-        .collect();
-    Pixmap::from_parts(data, src.width(), src.height())
 }

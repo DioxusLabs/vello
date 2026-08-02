@@ -9,7 +9,6 @@
 only break in edge cases, and some of them are also only related to conversions from f64 to f32."
 )]
 
-use crate::bitmap::GlyphPixmap;
 use crate::cache::{CacheableGlyph, CacheableGlyphKind, GlyphCacher, pack_color};
 use crate::color::PremulRgba8;
 use crate::color::palette::css::BLACK;
@@ -38,6 +37,7 @@ use skrifa::raw::TableProvider;
 use skrifa::{FontRef, OutlineGlyphCollection};
 use skrifa::{GlyphId, MetadataProvider};
 use smallvec::SmallVec;
+use vello_pixmap::Pixmap;
 
 /// Positioned glyph.
 #[derive(Copy, Clone, Default, Debug)]
@@ -156,7 +156,7 @@ pub(crate) struct GlyphOutline {
 #[derive(Debug)]
 pub(crate) struct GlyphBitmap {
     /// The pixmap of the glyph.
-    pub(crate) pixmap: Arc<GlyphPixmap>,
+    pub(crate) pixmap: Arc<Pixmap>,
     /// The rectangular area that should be filled with the bitmap when painting.
     pub(crate) area: Rect,
 }
@@ -468,21 +468,21 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
                 };
                 match style {
                     Style::Fill => {
-                        fill_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session)
+                        fill_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session);
                     }
                     Style::Stroke => {
-                        stroke_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session)
+                        stroke_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session);
                     }
                 }
                 continue;
             }
 
             // ── Bitmap Glyphs ────────────────────────────────────────────
-            let bitmap_data: Option<(skrifa::bitmap::BitmapGlyph<'_>, GlyphPixmap)> = bitmaps
+            let bitmap_data: Option<(skrifa::bitmap::BitmapGlyph<'_>, Pixmap)> = bitmaps
                 .glyph_for_size(Size::new(draw_props.font_size), glyph_id)
                 .and_then(|g| match g.data {
                     #[cfg(feature = "png")]
-                    BitmapData::Png(data) => GlyphPixmap::from_png(std::io::Cursor::new(data))
+                    BitmapData::Png(data) => Pixmap::from_png(std::io::Cursor::new(data))
                         .ok()
                         .map(|d| (g, d)),
                     #[cfg(not(feature = "png"))]
@@ -541,10 +541,10 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
                 };
                 match style {
                     Style::Fill => {
-                        fill_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session)
+                        fill_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session);
                     }
                     Style::Stroke => {
-                        stroke_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session)
+                        stroke_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session);
                     }
                 }
                 continue;
@@ -582,10 +582,10 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
             };
             match style {
                 Style::Fill => {
-                    fill_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session)
+                    fill_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session);
                 }
                 Style::Stroke => {
-                    stroke_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session)
+                    stroke_glyph(renderer, cacher, prepared_glyph, &mut outline_cache_session);
                 }
             }
         }
@@ -1105,7 +1105,7 @@ fn calculate_outline_transform(
 ///
 /// This wraps the pixmap in a `GlyphType::Bitmap` with its display area,
 /// without any positioning information.
-fn create_bitmap_glyph(pixmap: GlyphPixmap) -> GlyphType<'static> {
+fn create_bitmap_glyph(pixmap: Pixmap) -> GlyphType<'static> {
     // Scale factor already accounts for ppem, so we can just draw in the size of the
     // actual image
     let area = Rect::new(
@@ -1131,7 +1131,7 @@ fn create_bitmap_glyph(pixmap: GlyphPixmap) -> GlyphType<'static> {
 /// - Special handling for Apple Color Emoji
 fn calculate_bitmap_transform(
     glyph: Glyph,
-    pixmap: &GlyphPixmap,
+    pixmap: &Pixmap,
     draw_props: DrawProps,
     font_size: f32,
     upem: f32,

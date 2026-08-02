@@ -14,10 +14,11 @@ use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter};
 use foldhash::fast::FixedState;
-use glifo::{GlyphPixmap, NormalizedCoord};
+use glifo::NormalizedCoord;
 use hashbrown::HashMap;
 use hashbrown::hash_map::RawEntryMut;
 use smallvec::SmallVec;
+use vello_pixmap::Pixmap;
 
 /// Deterministic hash map type alias.
 ///
@@ -83,7 +84,7 @@ pub struct PendingBitmapUpload {
     /// Use `image_cache.get(image_id)` to obtain `atlas_id` and `offset`.
     pub image_id: ImageId,
     /// The bitmap pixel data to upload (premultiplied RGBA8).
-    pub pixmap: Arc<GlyphPixmap>,
+    pub pixmap: Arc<Pixmap>,
     /// The atlas slot information for this glyph (includes dimensions).
     pub atlas_slot: AtlasSlot,
 }
@@ -294,7 +295,7 @@ impl GlyphAtlas {
     pub fn push_pending_upload(
         &mut self,
         image_id: ImageId,
-        pixmap: Arc<GlyphPixmap>,
+        pixmap: Arc<Pixmap>,
         atlas_slot: AtlasSlot,
     ) {
         self.pending_uploads.push(PendingBitmapUpload {

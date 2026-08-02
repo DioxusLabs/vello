@@ -39,8 +39,6 @@ use core_maths as _;
 
 // Currently used for debugging in `cache.rs`, but only in debug build.
 use log as _;
-#[cfg(feature = "png")]
-use png as _;
 #[cfg(feature = "std")]
 extern crate std;
 
@@ -54,7 +52,7 @@ mod interface;
 pub mod renderer;
 mod util;
 
-pub use bitmap::{GlyphImage, GlyphPixmap};
+pub use bitmap::GlyphImage;
 pub use cache::{
     BitmapGlyphData, CacheRunConfig, CacheableGlyph, CacheableGlyphKind, ColrGlyphData,
     GlyphCacher, NoCache, OutlineGlyphData,
@@ -64,3 +62,4 @@ pub use glyph::{
     GlyphRunBuilder, GlyphRunRenderer, HintCache, HintKey, NormalizedCoord, OutlineCache,
 };
 pub use interface::{DrawSink, GlyphPaint, GlyphRenderer};
+pub use vello_pixmap::{Pixmap, PixmapMut};

@@ -1360,9 +1360,9 @@ dependencies = [
  "hashbrown 0.17.1",
  "log",
  "peniko",
- "png",
  "skrifa 0.44.0",
  "smallvec",
+ "vello_pixmap",
 ]
 
 [[package]]
@@ -4486,10 +4486,10 @@ dependencies = [
  "libm",
  "log",
  "peniko",
- "png",
  "roxmltree 0.20.0",
  "smallvec",
  "thiserror 2.0.18",
+ "vello_pixmap",
 ]
 
 [[package]]
@@ -4585,6 +4585,15 @@ dependencies = [
  "vello_hybrid",
  "wgpu",
  "winit",
+]
+
+[[package]]
+name = "vello_pixmap"
+version = "0.1.0"
+dependencies = [
+ "bytemuck",
+ "peniko",
+ "png",
 ]
 
 [[package]]

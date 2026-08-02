@@ -80,7 +80,7 @@ pub mod paint;
 #[doc(hidden)]
 #[cfg(feature = "pico_svg")]
 pub mod pico_svg;
-pub mod pixmap;
+pub use vello_pixmap as pixmap;
 #[doc(hidden)]
 #[cfg(feature = "probe")]
 pub mod probe;
