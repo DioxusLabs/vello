@@ -17,8 +17,8 @@ use foldhash::fast::FixedState;
 use glifo::NormalizedCoord;
 use hashbrown::HashMap;
 use hashbrown::hash_map::RawEntryMut;
+use pixmap::Pixmap;
 use smallvec::SmallVec;
-use vello_pixmap::Pixmap;
 
 /// Deterministic hash map type alias.
 ///

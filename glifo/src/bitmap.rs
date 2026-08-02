@@ -5,7 +5,7 @@
 
 use alloc::sync::Arc;
 use peniko::ImageQuality;
-use vello_pixmap::Pixmap;
+use pixmap::Pixmap;
 
 /// An image paint for an uncached bitmap glyph.
 #[derive(Clone, Debug)]

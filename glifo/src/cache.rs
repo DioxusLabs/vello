@@ -18,7 +18,7 @@ use crate::glyph::{FontEmbolden, NormalizedCoord};
 use crate::interface::{DrawSink, GlyphRenderer};
 use crate::kurbo::{Affine, BezPath, Rect};
 use alloc::sync::Arc;
-use vello_pixmap::Pixmap;
+use pixmap::Pixmap;
 
 /// Premultiply and pack an RGBA color into a `u32` for bitwise hashing/comparison.
 #[inline]

@@ -62,4 +62,4 @@ pub use glyph::{
     GlyphRunBuilder, GlyphRunRenderer, HintCache, HintKey, NormalizedCoord, OutlineCache,
 };
 pub use interface::{DrawSink, GlyphPaint, GlyphRenderer};
-pub use vello_pixmap::{Pixmap, PixmapMut};
+pub use pixmap::{Pixmap, PixmapMut};

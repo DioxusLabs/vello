@@ -1,5 +1,5 @@
 [package]
-name = "vello_pixmap"
+name = "pixmap"
 version = "0.1.0"
 description = "A simple premultiplied RGBA8 pixmap type shared across Vello crates."
 categories = ["rendering", "graphics"]

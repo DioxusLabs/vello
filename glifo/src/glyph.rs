@@ -29,6 +29,7 @@ use core::ops::RangeInclusive;
 use core_maths::CoreFloat as _;
 use hashbrown::hash_map::{Entry, RawEntryMut};
 use hashbrown::{Equivalent, HashMap};
+use pixmap::Pixmap;
 use skrifa::bitmap::{BitmapData, BitmapFormat, BitmapStrikes, Origin};
 use skrifa::instance::{LocationRef, Size};
 use skrifa::outline::{DrawSettings, OutlineGlyphFormat};
@@ -37,7 +38,6 @@ use skrifa::raw::TableProvider;
 use skrifa::{FontRef, OutlineGlyphCollection};
 use skrifa::{GlyphId, MetadataProvider};
 use smallvec::SmallVec;
-use vello_pixmap::Pixmap;
 
 /// Positioned glyph.
 #[derive(Copy, Clone, Default, Debug)]
