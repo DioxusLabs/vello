@@ -3,14 +3,13 @@
 
 //! Drawing COLR glyphs.
 
-use crate::atlas::commands::AtlasPaint;
 use crate::color::Srgb;
 use crate::color::{AlphaColor, DynamicColor};
 use crate::glyph::{
     CachedOutline, FontEmbolden, FontInfo, GlyphColr, OutlineCacheSession, OutlinePath,
     VarLookupKey,
 };
-use crate::interface::DrawSink;
+use crate::interface::{DrawSink, GlyphPaint};
 use crate::kurbo::{Affine, Point, Rect, Shape};
 use crate::peniko::{self, BlendMode, ColorStops, Compose, Extend, Gradient, Mix};
 use crate::util::FloatExt;
@@ -28,17 +27,17 @@ use skrifa::{FontRef, GlyphId, MetadataProvider};
 use smallvec::SmallVec;
 
 trait ColrDrawSinkExt: DrawSink {
-    fn fill_with_paint(&mut self, rect: &Rect, paint: AtlasPaint) {
+    fn fill_with_paint(&mut self, rect: &Rect, paint: GlyphPaint) {
         self.set_paint(paint);
         self.fill_rect(rect);
     }
 
     fn fill_solid(&mut self, rect: &Rect, color: AlphaColor<Srgb>) {
-        self.fill_with_paint(rect, AtlasPaint::Solid(color));
+        self.fill_with_paint(rect, GlyphPaint::Solid(color));
     }
 
     fn fill_gradient(&mut self, rect: &Rect, gradient: Gradient) {
-        self.fill_with_paint(rect, AtlasPaint::Gradient(gradient));
+        self.fill_with_paint(rect, GlyphPaint::Gradient(gradient));
     }
 }
 

@@ -17,53 +17,28 @@
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 
-use crate::DrawSink;
-use crate::color::{AlphaColor, Srgb};
-use crate::kurbo::{Affine, BezPath, Rect};
-use crate::peniko::{BlendMode, Gradient};
-use vello_common::paint::PaintType;
+use crate::paint::PaintType;
+use glifo::{DrawSink, GlyphPaint};
+use peniko::BlendMode;
+use peniko::kurbo::{Affine, BezPath, Rect};
 
-/// Paint type for atlas commands.
-#[derive(Clone, Debug)]
-pub enum AtlasPaint {
-    /// A solid colour (used for outlines and COLR solid fills).
-    Solid(AlphaColor<Srgb>),
-    /// A gradient (used for COLR gradient fills).
-    Gradient(Gradient),
-}
-
-impl From<AlphaColor<Srgb>> for AtlasPaint {
-    fn from(c: AlphaColor<Srgb>) -> Self {
-        Self::Solid(c)
-    }
-}
-
-impl From<Gradient> for AtlasPaint {
-    fn from(g: Gradient) -> Self {
-        Self::Gradient(g)
-    }
-}
-
-impl From<AtlasPaint> for PaintType {
-    fn from(paint: AtlasPaint) -> Self {
-        match paint {
-            AtlasPaint::Solid(color) => Self::Solid(color),
-            AtlasPaint::Gradient(gradient) => Self::Gradient(gradient),
-        }
+/// Convert a renderer-neutral [`GlyphPaint`] into a [`PaintType`].
+pub fn paint_type_from_glyph_paint(paint: GlyphPaint) -> PaintType {
+    match paint {
+        GlyphPaint::Solid(color) => PaintType::Solid(color),
+        GlyphPaint::Gradient(gradient) => PaintType::Gradient(gradient),
     }
 }
 
 /// A single draw command recorded for deferred atlas rendering.
 ///
 /// The variants correspond 1:1 to the methods on [`DrawSink`].
-///
-/// [`DrawSink`]: crate::interface::DrawSink
 #[derive(Clone, Debug)]
 pub enum AtlasCommand {
     /// Set the current transform.
     SetTransform(Affine),
     /// Set the current paint (solid colour or gradient).
-    SetPaint(AtlasPaint),
+    SetPaint(GlyphPaint),
     /// Set the paint transform.
     SetPaintTransform(Affine),
     /// Fill a path with the current paint and transform.
@@ -87,8 +62,6 @@ pub enum AtlasCommand {
 /// The recorder exposes the same method API as the actual renderers
 /// (`RenderContext`, `Scene`). It also implements [`DrawSink`] so
 /// that the COLR glyph painter can write into it directly.
-///
-/// [`DrawSink`]: crate::DrawSink
 pub struct AtlasCommandRecorder {
     /// Which atlas page these commands target.
     pub page_index: u32,
@@ -123,7 +96,7 @@ impl DrawSink for AtlasCommandRecorder {
     }
 
     #[inline]
-    fn set_paint(&mut self, paint: AtlasPaint) {
+    fn set_paint(&mut self, paint: GlyphPaint) {
         self.commands.push(AtlasCommand::SetPaint(paint));
     }
 

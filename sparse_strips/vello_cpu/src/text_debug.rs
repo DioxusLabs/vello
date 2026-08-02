@@ -12,8 +12,7 @@ use crate::render::Resources;
 use crate::text::GlyphAtlasResources;
 #[cfg(feature = "png")]
 use alloc::format;
-use glifo::GlyphCacheKey;
-use glifo::atlas::GlyphCacheStats;
+use vello_common::glyph_cache::{GlyphCacheKey, GlyphCacheStats};
 
 #[cfg(feature = "png")]
 impl GlyphAtlasResources {

@@ -8,13 +8,10 @@
 //! COLR context color, and variable-font coordinates. Two keys that compare
 //! equal produce identical bitmaps and can safely share a single atlas entry.
 
-use crate::color::{AlphaColor, Srgb};
-use crate::glyph::FontEmbolden;
-use crate::kurbo::Join;
 use core::hash::{Hash, Hasher};
-#[cfg(not(feature = "std"))]
-use core_maths::CoreFloat as _;
-use skrifa::instance::NormalizedCoord;
+use glifo::{FontEmbolden, NormalizedCoord};
+use peniko::color::{AlphaColor, Srgb};
+use peniko::kurbo::Join;
 use smallvec::SmallVec;
 
 /// Number of horizontal subpixel quantization buckets (valid range: 1–253).
@@ -42,7 +39,7 @@ pub(crate) const SUBPIXEL_BITMAP: u8 = SUBPIXEL_BUCKETS + 1;
 /// the glyph's appearance.
 ///
 /// `var_coords` is deliberately excluded from `Hash`/`Eq` because the
-/// [`GlyphAtlas`](crate::atlas::cache::GlyphAtlas) uses a two-level map
+/// [`GlyphAtlas`](crate::glyph_cache::cache::GlyphAtlas) uses a two-level map
 /// structure that already partitions entries by variation coordinates.
 /// Callers that use a flat map must ensure equivalent `var_coords`
 /// externally.
@@ -159,7 +156,7 @@ impl PartialEq for GlyphCacheKey {
 impl Eq for GlyphCacheKey {}
 
 #[inline(always)]
-fn join_bits(join: Join) -> u8 {
+pub(crate) fn join_bits(join: Join) -> u8 {
     match join {
         Join::Bevel => 0,
         Join::Miter => 1,
@@ -176,12 +173,6 @@ fn f32_bits(value: f64) -> u32 {
     (value as f32).to_bits()
 }
 
-/// Premultiply and pack an RGBA color into a `u32` for bitwise hashing/comparison.
-#[inline]
-pub(crate) fn pack_color(color: AlphaColor<Srgb>) -> u32 {
-    color.premultiply().to_rgba8().to_u32()
-}
-
 /// Quantize a fractional pixel offset into one of [`SUBPIXEL_BUCKETS`] buckets.
 ///
 /// Values near 1.0 (>= 0.875 with 4 buckets) are clamped to the last bucket
@@ -194,13 +185,14 @@ pub(crate) fn pack_color(color: AlphaColor<Srgb>) -> u32 {
 )]
 #[inline]
 fn quantize_subpixel(frac: f32) -> u8 {
-    let normalized = frac.fract();
+    // Manual fract/round (for positive values) so this works without `std`.
+    let normalized = frac - (frac as i64) as f32;
     let normalized = if normalized < 0.0 {
         normalized + 1.0
     } else {
         normalized
     };
-    ((normalized * SUBPIXEL_BUCKETS as f32).round() as u8).min(SUBPIXEL_BUCKETS - 1)
+    ((normalized * SUBPIXEL_BUCKETS as f32 + 0.5) as u8).min(SUBPIXEL_BUCKETS - 1)
 }
 
 /// Convert a quantized bucket index back to the fractional pixel offset it represents.
@@ -211,7 +203,8 @@ pub fn subpixel_offset(quantized: u8) -> f32 {
 
 #[cfg(test)]
 mod tests {
-    use crate::color::palette::css::BLACK;
+    use glifo::cache::pack_color;
+    use peniko::color::palette::css::BLACK;
 
     use super::*;
 
@@ -357,7 +350,7 @@ mod tests {
             BLACK,
             packed,
             FontEmbolden::default(),
-            &[NormalizedCoord::from_bits(100)],
+            &[100],
         );
         assert_eq!(key1, key2);
     }

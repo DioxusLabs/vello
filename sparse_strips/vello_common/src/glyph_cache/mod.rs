@@ -11,9 +11,12 @@
 //! - Implements simple age-based eviction
 //!
 //! The core type is [`GlyphAtlas`], which handles allocation, eviction,
-//! and pending-command queues.
+//! and pending-command queues. [`AtlasGlyphCacher`] implements glifo's
+//! `GlyphCacher` hook on top of it for renderers implementing
+//! [`AtlasGlyphRenderer`].
 
 pub mod cache;
+mod cacher;
 pub mod commands;
 pub mod key;
 mod region;
@@ -21,9 +24,9 @@ mod region;
 #[cfg(all(debug_assertions, feature = "std"))]
 pub use cache::GlyphCacheStats;
 pub use cache::{
-    AtlasConfig, GLYPH_PADDING, GlyphAtlas, GlyphCacheConfig, ImageCache, PendingBitmapUpload,
-    PendingClearRect,
+    GLYPH_PADDING, GlyphAtlas, GlyphCacheConfig, PendingBitmapUpload, PendingClearRect,
 };
-pub use commands::{AtlasCommand, AtlasCommandRecorder, AtlasPaint};
+pub use cacher::{AtlasGlyphCacher, AtlasGlyphRenderer, replay_atlas_commands};
+pub use commands::{AtlasCommand, AtlasCommandRecorder, paint_type_from_glyph_paint};
 pub use key::GlyphCacheKey;
 pub use region::{AtlasSlot, RasterMetrics};

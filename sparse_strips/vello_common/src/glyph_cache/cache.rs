@@ -8,17 +8,16 @@ use super::key::GlyphCacheKey;
 #[cfg(all(debug_assertions, feature = "std"))]
 use super::key::SUBPIXEL_BUCKETS;
 use super::region::{AtlasSlot, RasterMetrics};
-use crate::Pixmap;
+use crate::image_cache::ImageCache;
+use crate::paint::ImageId;
 use alloc::sync::Arc;
 use alloc::vec::Vec;
 use core::fmt::{Debug, Formatter};
 use foldhash::fast::FixedState;
+use glifo::{GlyphPixmap, NormalizedCoord};
 use hashbrown::HashMap;
 use hashbrown::hash_map::RawEntryMut;
 use smallvec::SmallVec;
-pub use vello_common::image_cache::ImageCache;
-pub use vello_common::multi_atlas::AtlasConfig;
-use vello_common::paint::ImageId;
 
 /// Deterministic hash map type alias.
 ///
@@ -83,8 +82,8 @@ pub struct PendingBitmapUpload {
     /// The image ID allocated in the shared `ImageCache`.
     /// Use `image_cache.get(image_id)` to obtain `atlas_id` and `offset`.
     pub image_id: ImageId,
-    /// The bitmap pixel data to upload.
-    pub pixmap: Arc<Pixmap>,
+    /// The bitmap pixel data to upload (premultiplied RGBA8).
+    pub pixmap: Arc<GlyphPixmap>,
     /// The atlas slot information for this glyph (includes dimensions).
     pub atlas_slot: AtlasSlot,
 }
@@ -295,7 +294,7 @@ impl GlyphAtlas {
     pub fn push_pending_upload(
         &mut self,
         image_id: ImageId,
-        pixmap: Arc<Pixmap>,
+        pixmap: Arc<GlyphPixmap>,
         atlas_slot: AtlasSlot,
     ) {
         self.pending_uploads.push(PendingBitmapUpload {
@@ -623,11 +622,11 @@ struct GlyphCacheEntry {
 }
 
 /// Key for variable font caches (owned version).
-type VarKey = SmallVec<[skrifa::instance::NormalizedCoord; 4]>;
+type VarKey = SmallVec<[NormalizedCoord; 4]>;
 
 /// Lookup key for variable font caches (borrowed version).
 #[derive(Copy, Clone, PartialEq, Eq, Hash, Debug)]
-struct VarLookupKey<'a>(&'a [skrifa::instance::NormalizedCoord]);
+struct VarLookupKey<'a>(&'a [NormalizedCoord]);
 
 impl hashbrown::Equivalent<VarKey> for VarLookupKey<'_> {
     fn equivalent(&self, other: &VarKey) -> bool {

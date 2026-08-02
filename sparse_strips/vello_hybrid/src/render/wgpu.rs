@@ -52,9 +52,9 @@ use crate::{
 use alloc::vec::Vec;
 use alloc::{sync::Arc, vec};
 use core::{fmt::Debug, num::NonZeroU64};
-#[cfg(feature = "text")]
-use glifo::PendingClearRect;
 use hashbrown::{HashMap, hash_map::Entry};
+#[cfg(feature = "text")]
+use vello_common::glyph_cache::PendingClearRect;
 use vello_common::image_cache::{ImageCache, ImageResource};
 use vello_common::multi_atlas::{AtlasConfig, AtlasId};
 use vello_common::{
@@ -3375,6 +3375,87 @@ impl AtlasWriter for Pixmap {
                 height,
                 depth_or_array_layers: 1,
             },
+        );
+    }
+}
+
+/// Implementation for glyph bitmaps - direct upload to atlas
+impl AtlasWriter for glifo::GlyphPixmap {
+    fn width(&self) -> u32 {
+        self.width() as u32
+    }
+
+    fn height(&self) -> u32 {
+        self.height() as u32
+    }
+
+    fn write_to_atlas_layer(
+        &self,
+        _device: &Device,
+        queue: &Queue,
+        _encoder: &mut CommandEncoder,
+        atlas_texture: &Texture,
+        layer: u32,
+        offset: [u32; 2],
+        width: u32,
+        height: u32,
+    ) {
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo {
+                texture: atlas_texture,
+                mip_level: 0,
+                origin: wgpu::Origin3d {
+                    x: offset[0],
+                    y: offset[1],
+                    z: layer,
+                },
+                aspect: wgpu::TextureAspect::All,
+            },
+            self.data(),
+            wgpu::TexelCopyBufferLayout {
+                offset: 0,
+                bytes_per_row: Some(4 * width),
+                rows_per_image: Some(height),
+            },
+            Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+}
+
+/// Implementation for `Arc<GlyphPixmap>`
+impl AtlasWriter for Arc<glifo::GlyphPixmap> {
+    fn width(&self) -> u32 {
+        self.as_ref().width() as u32
+    }
+
+    fn height(&self) -> u32 {
+        self.as_ref().height() as u32
+    }
+
+    fn write_to_atlas_layer(
+        &self,
+        device: &Device,
+        queue: &Queue,
+        encoder: &mut CommandEncoder,
+        atlas_texture: &Texture,
+        layer: u32,
+        offset: [u32; 2],
+        width: u32,
+        height: u32,
+    ) {
+        self.as_ref().write_to_atlas_layer(
+            device,
+            queue,
+            encoder,
+            atlas_texture,
+            layer,
+            offset,
+            width,
+            height,
         );
     }
 }

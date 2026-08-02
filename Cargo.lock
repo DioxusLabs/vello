@@ -1357,14 +1357,12 @@ version = "0.2.0"
 dependencies = [
  "bytemuck",
  "core_maths",
- "foldhash 0.2.0",
  "hashbrown 0.17.1",
  "log",
  "peniko",
  "png",
  "skrifa 0.44.0",
  "smallvec",
- "vello_common",
 ]
 
 [[package]]
@@ -4481,7 +4479,10 @@ version = "0.1.0"
 dependencies = [
  "bytemuck",
  "fearless_simd",
+ "foldhash 0.2.0",
+ "glifo",
  "guillotiere",
+ "hashbrown 0.17.1",
  "libm",
  "log",
  "peniko",

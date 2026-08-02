@@ -12,20 +12,23 @@
 
 use core::ops::RangeInclusive;
 
+use alloc::sync::Arc;
+
 use crate::{AtlasId, Resources, Scene};
-use glifo::atlas::{PendingBitmapUpload, PendingClearRect};
-use glifo::renderer::replay_atlas_commands;
-use glifo::{
-    AtlasCacher, AtlasSlot, DrawSink, GLYPH_PADDING, Glyph, GlyphAtlas, GlyphCacheConfig,
-    GlyphRunBackend, ImageCache,
-};
+use glifo::{DrawSink, Glyph, GlyphImage, GlyphPaint, GlyphPixmap, GlyphRunBackend, NoCache};
 use peniko::BlendMode;
 use peniko::color::palette::css::BLACK;
 use peniko::color::{AlphaColor, Srgb};
+use vello_common::glyph_cache::{
+    AtlasGlyphCacher, AtlasGlyphRenderer, AtlasSlot, GLYPH_PADDING, GlyphAtlas, GlyphCacheConfig,
+    PendingBitmapUpload, PendingClearRect, replay_atlas_commands,
+};
+use vello_common::image_cache::ImageCache;
 use vello_common::kurbo::{Affine, BezPath, Rect};
 use vello_common::multi_atlas::AtlasConfig;
 use vello_common::paint::{Image, ImageSource, PaintType};
 use vello_common::peniko;
+use vello_common::pixmap::Pixmap;
 
 /// Glyph atlas cache for the hybrid (GPU) renderer.
 #[derive(Debug)]
@@ -144,8 +147,11 @@ impl DrawSink for Scene {
     }
 
     #[inline]
-    fn set_paint(&mut self, paint: glifo::AtlasPaint) {
-        Self::set_paint(self, paint);
+    fn set_paint(&mut self, paint: GlyphPaint) {
+        Self::set_paint(
+            self,
+            vello_common::glyph_cache::paint_type_from_glyph_paint(paint),
+        );
     }
 
     #[inline]
@@ -212,31 +218,31 @@ impl<'a> HybridGlyphRunBackend<'a> {
         self,
         run: glifo::GlyphRun<'a>,
         glyphs: Glyphs,
-        render: impl FnOnce(&mut glifo::GlyphRunRenderer<'a, 'a, Glyphs>, &mut Scene),
+        render: impl FnOnce(
+            &mut glifo::GlyphRunRenderer<'a, 'a, Glyphs>,
+            &mut Scene,
+            &mut dyn glifo::GlyphCacher<Scene>,
+        ),
     ) where
         Glyphs: Iterator<Item = Glyph> + Clone,
     {
-        let atlas_cacher = if self.atlas_cache_enabled {
+        if self.atlas_cache_enabled {
             self.resources.ensure_glyph_resources();
             let glyph_resources = self
                 .resources
                 .glyph_resources
                 .as_mut()
                 .expect("glyph atlas resources must exist after initialization");
-            AtlasCacher::Enabled(
+            let mut cacher = AtlasGlyphCacher::new(
                 &mut glyph_resources.glyph_atlas,
                 &mut self.resources.image_cache,
-            )
+            );
+            let mut glyph_run = run.build(glyphs, self.resources.glyph_prep_cache.as_mut());
+            render(&mut glyph_run, self.scene, &mut cacher);
         } else {
-            AtlasCacher::Disabled
-        };
-
-        let mut glyph_run = run.build(
-            glyphs,
-            self.resources.glyph_prep_cache.as_mut(),
-            atlas_cacher,
-        );
-        render(&mut glyph_run, self.scene);
+            let mut glyph_run = run.build(glyphs, self.resources.glyph_prep_cache.as_mut());
+            render(&mut glyph_run, self.scene, &mut NoCache);
+        }
     }
 }
 
@@ -250,18 +256,20 @@ impl<'a> GlyphRunBackend<'a> for HybridGlyphRunBackend<'a> {
     where
         Glyphs: Iterator<Item = Glyph> + Clone,
     {
-        self.render_glyphs(run, glyphs, |glyph_run, scene| glyph_run.fill_glyphs(scene));
+        self.render_glyphs(run, glyphs, |glyph_run, scene, mut cacher| {
+            glyph_run.fill_glyphs(scene, &mut cacher);
+        });
     }
 
     fn stroke_glyphs<Glyphs>(self, run: glifo::GlyphRun<'a>, glyphs: Glyphs)
     where
         Glyphs: Iterator<Item = Glyph> + Clone,
     {
-        self.render_glyphs(run, glyphs, |glyph_run, scene| {
+        self.render_glyphs(run, glyphs, |glyph_run, scene, mut cacher| {
             let stroke_adjustment = glyph_run.stroke_adjustment();
             let original_width = scene.stroke().width;
             scene.stroke_mut().width *= stroke_adjustment;
-            glyph_run.stroke_glyphs(scene);
+            glyph_run.stroke_glyphs(scene, &mut cacher);
             scene.stroke_mut().width = original_width;
         });
     }
@@ -278,7 +286,7 @@ impl<'a> GlyphRunBackend<'a> for HybridGlyphRunBackend<'a> {
     ) where
         Glyphs: Iterator<Item = Glyph> + Clone,
     {
-        self.render_glyphs(run, glyphs, |glyph_run, scene| {
+        self.render_glyphs(run, glyphs, |glyph_run, scene, _cacher| {
             glyph_run.render_decoration(x_range, baseline_y, offset, size, buffer, scene);
         });
     }
@@ -306,13 +314,17 @@ impl glifo::GlyphRenderer for Scene {
     }
 
     #[inline]
-    fn set_paint_image(&mut self, image: Image) {
-        self.set_paint(image);
-    }
-
-    #[inline]
-    fn set_tint(&mut self, tint: Option<vello_common::paint::Tint>) {
-        Self::set_tint(self, tint);
+    fn set_paint_image(&mut self, image: GlyphImage) {
+        let pixmap = Arc::new(pixmap_from_glyph_pixmap(&image.pixmap));
+        self.set_paint(Image {
+            image: ImageSource::Pixmap(pixmap),
+            sampler: peniko::ImageSampler {
+                x_extend: peniko::Extend::Pad,
+                y_extend: peniko::Extend::Pad,
+                quality: image.quality,
+                alpha: 1.0,
+            },
+        });
     }
 
     #[inline]
@@ -322,6 +334,18 @@ impl glifo::GlyphRenderer for Scene {
             PaintType::Solid(s) => s,
             _ => BLACK,
         }
+    }
+}
+
+impl AtlasGlyphRenderer for Scene {
+    #[inline]
+    fn set_tint(&mut self, tint: Option<vello_common::paint::Tint>) {
+        Self::set_tint(self, tint);
+    }
+
+    #[inline]
+    fn set_paint_atlas_image(&mut self, image: Image) {
+        self.set_paint(image);
     }
 
     #[inline]
@@ -339,4 +363,19 @@ impl glifo::GlyphRenderer for Scene {
         let padding = GLYPH_PADDING as f64;
         Affine::translate((-padding, -padding))
     }
+}
+
+/// Convert a decoded glyph bitmap into a pixmap (copies the pixel data).
+fn pixmap_from_glyph_pixmap(src: &GlyphPixmap) -> Pixmap {
+    let data = src
+        .data()
+        .chunks_exact(4)
+        .map(|c| peniko::color::PremulRgba8 {
+            r: c[0],
+            g: c[1],
+            b: c[2],
+            a: c[3],
+        })
+        .collect();
+    Pixmap::from_parts(data, src.width(), src.height())
 }

@@ -45,22 +45,22 @@ use png as _;
 extern crate std;
 
 use peniko::{self, color, kurbo};
-use vello_common::pixmap::Pixmap;
 
-pub mod atlas;
+mod bitmap;
+pub mod cache;
 mod colr;
 mod glyph;
 mod interface;
 pub mod renderer;
 mod util;
 
-pub use atlas::{
-    AtlasCommand, AtlasCommandRecorder, AtlasConfig, AtlasPaint, AtlasSlot, GLYPH_PADDING,
-    GlyphAtlas, GlyphCacheConfig, GlyphCacheKey, ImageCache, PendingClearRect, RasterMetrics,
+pub use bitmap::{GlyphImage, GlyphPixmap};
+pub use cache::{
+    BitmapGlyphData, CacheRunConfig, CacheableGlyph, CacheableGlyphKind, ColrGlyphData,
+    GlyphCacher, NoCache, OutlineGlyphData,
 };
 pub use glyph::{
-    AtlasCacher, FontEmbolden, Glyph, GlyphCaches, GlyphColr, GlyphPrepCache, GlyphPrepCacheMut,
-    GlyphRun, GlyphRunBackend, GlyphRunBuilder, GlyphRunRenderer, HintCache, HintKey,
-    NormalizedCoord, OutlineCache,
+    FontEmbolden, Glyph, GlyphColr, GlyphPrepCache, GlyphPrepCacheMut, GlyphRun, GlyphRunBackend,
+    GlyphRunBuilder, GlyphRunRenderer, HintCache, HintKey, NormalizedCoord, OutlineCache,
 };
-pub use interface::{DrawSink, GlyphRenderer};
+pub use interface::{DrawSink, GlyphPaint, GlyphRenderer};

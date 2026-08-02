@@ -3,11 +3,34 @@
 
 //! Traits for rendering glyphs and replaying them.
 
-use crate::atlas::{AtlasPaint, AtlasSlot};
+use crate::bitmap::GlyphImage;
 use crate::color::{AlphaColor, Srgb};
 use crate::kurbo::{Affine, BezPath, Rect};
-use crate::peniko::BlendMode;
-use vello_common::paint::{Image, ImageSource, PaintType, Tint};
+use crate::peniko::{BlendMode, Gradient};
+
+/// A renderer-neutral paint for glyph drawing.
+///
+/// COLR glyphs only require solid colors and gradients, both of which are
+/// expressible with `peniko` types.
+#[derive(Clone, Debug)]
+pub enum GlyphPaint {
+    /// A solid color.
+    Solid(AlphaColor<Srgb>),
+    /// A gradient.
+    Gradient(Gradient),
+}
+
+impl From<AlphaColor<Srgb>> for GlyphPaint {
+    fn from(color: AlphaColor<Srgb>) -> Self {
+        Self::Solid(color)
+    }
+}
+
+impl From<Gradient> for GlyphPaint {
+    fn from(gradient: Gradient) -> Self {
+        Self::Gradient(gradient)
+    }
+}
 
 // TODO: This trait is only temporary and will hopefully be replaced once we have a better
 // unifying imaging API.
@@ -16,7 +39,7 @@ pub trait DrawSink {
     /// Set the current transform.
     fn set_transform(&mut self, t: Affine);
     /// Set the current paint.
-    fn set_paint(&mut self, paint: AtlasPaint);
+    fn set_paint(&mut self, paint: GlyphPaint);
     /// Set the paint transform.
     fn set_paint_transform(&mut self, t: Affine);
     /// Fill a path with the current paint and transform.
@@ -55,7 +78,46 @@ pub trait DrawSink {
     fn height(&self) -> u16;
 }
 
-/// A stateful renderer that can draw sequences of cached and uncached glyphs.
+impl<T: DrawSink + ?Sized> DrawSink for &mut T {
+    fn set_transform(&mut self, t: Affine) {
+        (**self).set_transform(t);
+    }
+    fn set_paint(&mut self, paint: GlyphPaint) {
+        (**self).set_paint(paint);
+    }
+    fn set_paint_transform(&mut self, t: Affine) {
+        (**self).set_paint_transform(t);
+    }
+    fn fill_path(&mut self, path: &BezPath) {
+        (**self).fill_path(path);
+    }
+    fn fill_rect(&mut self, rect: &Rect) {
+        (**self).fill_rect(rect);
+    }
+    fn push_clip_layer(&mut self, clip: &BezPath) {
+        (**self).push_clip_layer(clip);
+    }
+    fn push_clip_path(&mut self, clip: &BezPath) {
+        (**self).push_clip_path(clip);
+    }
+    fn push_blend_layer(&mut self, blend_mode: BlendMode) {
+        (**self).push_blend_layer(blend_mode);
+    }
+    fn pop_layer(&mut self) {
+        (**self).pop_layer();
+    }
+    fn pop_clip_path(&mut self) {
+        (**self).pop_clip_path();
+    }
+    fn width(&self) -> u16 {
+        (**self).width()
+    }
+    fn height(&self) -> u16 {
+        (**self).height()
+    }
+}
+
+/// A stateful renderer that can draw sequences of glyphs.
 pub trait GlyphRenderer: DrawSink {
     /// The type of state used by the renderer.
     type SavedState;
@@ -69,24 +131,10 @@ pub trait GlyphRenderer: DrawSink {
     /// Stroke a path with the current paint and stroke settings.
     fn stroke_path(&mut self, path: &BezPath);
 
-    /// Set the current paint to an image.
-    fn set_paint_image(&mut self, image: Image);
-
-    /// Set the tint for subsequent image draws.
-    fn set_tint(&mut self, tint: Option<Tint>);
+    /// Set the current paint to a bitmap glyph image.
+    fn set_paint_image(&mut self, image: GlyphImage);
 
     /// Get the context color from the renderer's current paint, used for resolving the
     /// context-dependent colors of COLR glyphs.
     fn get_context_color(&self) -> AlphaColor<Srgb>;
-
-    /// Get the currently active paint.
-    fn current_paint(&self) -> &PaintType;
-
-    // Hopefully we can get rid of those below in the future.
-
-    /// Construct the [`ImageSource`] for sampling a cached glyph from the atlas.
-    fn atlas_image_source(&self, atlas_slot: &AtlasSlot) -> ImageSource;
-
-    /// Compute the paint transform for sampling a cached glyph from the atlas.
-    fn atlas_paint_transform(&self, atlas_slot: &AtlasSlot) -> Affine;
 }

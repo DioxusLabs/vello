@@ -54,9 +54,9 @@ use alloc::sync::Arc;
 use alloc::vec;
 use alloc::vec::Vec;
 use core::fmt::Debug;
-#[cfg(feature = "text")]
-use glifo::{GLYPH_PADDING, PendingClearRect};
 use resource::{Buffer, FragmentShader, Framebuffer, Program, Texture, VertexArray, VertexShader};
+#[cfg(feature = "text")]
+use vello_common::glyph_cache::{GLYPH_PADDING, PendingClearRect};
 use vello_common::image_cache::{ImageCache, ImageResource};
 use vello_common::multi_atlas::{AtlasConfig, AtlasId};
 use vello_common::{
@@ -2987,6 +2987,72 @@ impl WebGlAtlasWriter for Pixmap {
 
 /// Implementation for `Arc<Pixmap>`.
 impl WebGlAtlasWriter for Arc<Pixmap> {
+    fn width(&self) -> u32 {
+        self.as_ref().width() as u32
+    }
+
+    fn height(&self) -> u32 {
+        self.as_ref().height() as u32
+    }
+
+    fn write_to_atlas_layer(
+        &self,
+        gl: &WebGl2RenderingContext,
+        atlas_texture_array: &WebGlTexture,
+        layer: u32,
+        offset: [u32; 2],
+        width: u32,
+        height: u32,
+    ) {
+        self.as_ref()
+            .write_to_atlas_layer(gl, atlas_texture_array, layer, offset, width, height);
+    }
+}
+
+/// Implementation for glyph bitmaps - direct upload using raw pixel data.
+impl WebGlAtlasWriter for glifo::GlyphPixmap {
+    fn width(&self) -> u32 {
+        self.width() as u32
+    }
+
+    fn height(&self) -> u32 {
+        self.height() as u32
+    }
+
+    fn write_to_atlas_layer(
+        &self,
+        gl: &WebGl2RenderingContext,
+        atlas_texture_array: &WebGlTexture,
+        layer: u32,
+        offset: [u32; 2],
+        width: u32,
+        height: u32,
+    ) {
+        gl.active_texture(WebGl2RenderingContext::TEXTURE0);
+        gl.bind_texture(
+            WebGl2RenderingContext::TEXTURE_2D_ARRAY,
+            Some(atlas_texture_array),
+        );
+
+        gl.tex_sub_image_3d_with_opt_u8_array(
+            WebGl2RenderingContext::TEXTURE_2D_ARRAY,
+            0,
+            offset[0] as i32,
+            offset[1] as i32,
+            layer as i32,
+            width as i32,
+            height as i32,
+            1,
+            WebGl2RenderingContext::RGBA,
+            WebGl2RenderingContext::UNSIGNED_BYTE,
+            Some(self.data()),
+        )
+        .unwrap();
+    }
+}
+
+/// Implementation for `Arc<GlyphPixmap>`.
+impl WebGlAtlasWriter for Arc<glifo::GlyphPixmap> {
     fn width(&self) -> u32 {
         self.as_ref().width() as u32
     }

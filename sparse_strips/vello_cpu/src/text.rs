@@ -22,15 +22,18 @@ use alloc::vec::Vec;
 use color::palette::css::BLACK;
 use core::fmt::Debug;
 use core::ops::RangeInclusive;
-use glifo::atlas::{
-    AtlasConfig, AtlasSlot, GlyphAtlas, GlyphCacheConfig, ImageCache, PendingClearRect,
-};
-use glifo::{AtlasCacher, DrawSink, GlyphRunBackend};
-use glifo::{Glyph, renderer};
+use glifo::{DrawSink, GlyphImage, GlyphPaint, GlyphRunBackend, NoCache};
+use glifo::{Glyph, GlyphPixmap};
 use kurbo::{Affine, BezPath, Rect};
 use peniko::BlendMode;
 use peniko::color::{AlphaColor, Srgb};
 use vello_common::fearless_simd::Level;
+use vello_common::glyph_cache::{
+    AtlasGlyphCacher, AtlasGlyphRenderer, AtlasSlot, GlyphAtlas, GlyphCacheConfig,
+    PendingClearRect, paint_type_from_glyph_paint, replay_atlas_commands,
+};
+use vello_common::image_cache::ImageCache;
+use vello_common::multi_atlas::AtlasConfig;
 use vello_common::paint::ImageId;
 
 fn atlas_page_image_id(page_index: u32) -> ImageId {
@@ -175,7 +178,7 @@ impl Resources {
                     .expect("atlas page pixmap must be uniquely owned during replay");
 
                 glyph_renderer.reset();
-                renderer::replay_atlas_commands(&mut recorder.commands, glyph_renderer);
+                replay_atlas_commands(&mut recorder.commands, glyph_renderer);
                 glyph_renderer.flush();
                 glyph_renderer.render_with(
                     page,
@@ -220,11 +223,15 @@ impl<'a> CpuGlyphRunBackend<'a> {
         self,
         run: glifo::GlyphRun<'a>,
         glyphs: Glyphs,
-        render: impl FnOnce(&mut glifo::GlyphRunRenderer<'a, 'a, Glyphs>, &mut RenderContext),
+        render: impl FnOnce(
+            &mut glifo::GlyphRunRenderer<'a, 'a, Glyphs>,
+            &mut RenderContext,
+            &mut dyn glifo::GlyphCacher<RenderContext>,
+        ),
     ) where
         Glyphs: Iterator<Item = Glyph> + Clone,
     {
-        let atlas_cacher = if self.atlas_cache_enabled {
+        if self.atlas_cache_enabled {
             self.resources
                 .ensure_glyph_resources(self.ctx.render_settings.level);
             let glyph_resources = self
@@ -232,20 +239,16 @@ impl<'a> CpuGlyphRunBackend<'a> {
                 .glyph_resources
                 .as_mut()
                 .expect("glyph atlas resources must exist after initialization");
-            AtlasCacher::Enabled(
+            let mut cacher = AtlasGlyphCacher::new(
                 &mut glyph_resources.glyph_atlas,
                 &mut glyph_resources.image_cache,
-            )
+            );
+            let mut glyph_run = run.build(glyphs, self.resources.glyph_prep_cache.as_mut());
+            render(&mut glyph_run, self.ctx, &mut cacher);
         } else {
-            AtlasCacher::Disabled
-        };
-
-        let mut glyph_run = run.build(
-            glyphs,
-            self.resources.glyph_prep_cache.as_mut(),
-            atlas_cacher,
-        );
-        render(&mut glyph_run, self.ctx);
+            let mut glyph_run = run.build(glyphs, self.resources.glyph_prep_cache.as_mut());
+            render(&mut glyph_run, self.ctx, &mut NoCache);
+        }
     }
 }
 
@@ -259,18 +262,20 @@ impl<'a> GlyphRunBackend<'a> for CpuGlyphRunBackend<'a> {
     where
         Glyphs: Iterator<Item = Glyph> + Clone,
     {
-        self.render_glyphs(run, glyphs, |glyph_run, ctx| glyph_run.fill_glyphs(ctx));
+        self.render_glyphs(run, glyphs, |glyph_run, ctx, mut cacher| {
+            glyph_run.fill_glyphs(ctx, &mut cacher);
+        });
     }
 
     fn stroke_glyphs<Glyphs>(self, run: glifo::GlyphRun<'a>, glyphs: Glyphs)
     where
         Glyphs: Iterator<Item = Glyph> + Clone,
     {
-        self.render_glyphs(run, glyphs, |glyph_run, ctx| {
+        self.render_glyphs(run, glyphs, |glyph_run, ctx, mut cacher| {
             let stroke_adjustment = glyph_run.stroke_adjustment();
             let original_width = ctx.stroke().width;
             ctx.stroke_mut().width *= stroke_adjustment;
-            glyph_run.stroke_glyphs(ctx);
+            glyph_run.stroke_glyphs(ctx, &mut cacher);
             ctx.stroke_mut().width = original_width;
         });
     }
@@ -287,7 +292,7 @@ impl<'a> GlyphRunBackend<'a> for CpuGlyphRunBackend<'a> {
     ) where
         Glyphs: Iterator<Item = Glyph> + Clone,
     {
-        self.render_glyphs(run, glyphs, |glyph_run, ctx| {
+        self.render_glyphs(run, glyphs, |glyph_run, ctx, _cacher| {
             glyph_run.render_decoration(x_range, baseline_y, offset, size, buffer, ctx);
         });
     }
@@ -315,7 +320,7 @@ fn clear_pixmap_region(dst: &mut Pixmap, rect: PendingClearRect) {
 
 /// Copy bitmap glyph pixels into a rectangular region of an atlas page.
 fn copy_pixmap_to_atlas(
-    src: &Pixmap,
+    src: &GlyphPixmap,
     dst: &mut Pixmap,
     dst_x: u16,
     dst_y: u16,
@@ -327,7 +332,7 @@ fn copy_pixmap_to_atlas(
     let src_stride = src.width() as usize;
     let dst_stride = dst.width() as usize;
 
-    let src_data = src.data_as_u8_slice();
+    let src_data = src.data();
     let dst_data = dst.data_as_u8_slice_mut();
 
     for y in 0..copy_height {
@@ -347,8 +352,8 @@ impl DrawSink for RenderContext {
     }
 
     #[inline]
-    fn set_paint(&mut self, paint: glifo::AtlasPaint) {
-        Self::set_paint(self, paint);
+    fn set_paint(&mut self, paint: GlyphPaint) {
+        Self::set_paint(self, paint_type_from_glyph_paint(paint));
     }
 
     #[inline]
@@ -421,13 +426,17 @@ impl glifo::GlyphRenderer for RenderContext {
     }
 
     #[inline]
-    fn set_paint_image(&mut self, image: Image) {
-        self.set_paint(image);
-    }
-
-    #[inline]
-    fn set_tint(&mut self, tint: Option<vello_common::paint::Tint>) {
-        Self::set_tint(self, tint);
+    fn set_paint_image(&mut self, image: GlyphImage) {
+        let pixmap = Arc::new(pixmap_from_glyph_pixmap(&image.pixmap));
+        self.set_paint(Image {
+            image: ImageSource::Pixmap(pixmap),
+            sampler: peniko::ImageSampler {
+                x_extend: peniko::Extend::Pad,
+                y_extend: peniko::Extend::Pad,
+                quality: image.quality,
+                alpha: 1.0,
+            },
+        });
     }
 
     #[inline]
@@ -437,6 +446,18 @@ impl glifo::GlyphRenderer for RenderContext {
             PaintType::Solid(s) => s,
             _ => BLACK,
         }
+    }
+}
+
+impl AtlasGlyphRenderer for RenderContext {
+    #[inline]
+    fn set_tint(&mut self, tint: Option<vello_common::paint::Tint>) {
+        Self::set_tint(self, tint);
+    }
+
+    #[inline]
+    fn set_paint_atlas_image(&mut self, image: Image) {
+        self.set_paint(image);
     }
 
     #[inline]
@@ -455,6 +476,21 @@ impl glifo::GlyphRenderer for RenderContext {
     }
 }
 
+/// Convert a decoded glyph bitmap into a CPU pixmap (copies the pixel data).
+fn pixmap_from_glyph_pixmap(src: &GlyphPixmap) -> Pixmap {
+    let data = src
+        .data()
+        .chunks_exact(4)
+        .map(|c| color::PremulRgba8 {
+            r: c[0],
+            g: c[1],
+            b: c[2],
+            a: c[3],
+        })
+        .collect();
+    Pixmap::from_parts(data, src.width(), src.height())
+}
+
 /// Debug utilities for visualizing glyph bounds during rasterization.
 #[cfg(debug_assertions)]
 #[allow(
@@ -469,7 +505,7 @@ mod debug {
     use crate::RenderContext;
     use crate::kurbo::{Affine, Rect};
     use crate::peniko;
-    use glifo::atlas::RasterMetrics;
+    use vello_common::glyph_cache::RasterMetrics;
 
     static COLOR_INDEX: AtomicUsize = AtomicUsize::new(0);
 

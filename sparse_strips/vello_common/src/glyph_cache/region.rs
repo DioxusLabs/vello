@@ -3,7 +3,7 @@
 
 //! Atlas slot and rasterization data structures.
 
-use vello_common::paint::ImageId;
+use crate::paint::ImageId;
 
 /// Location and metrics of a cached glyph within an atlas page.
 ///
