@@ -521,6 +521,9 @@ fn fs_main(
             let blurred_texel3 = load_encoded_paint_texel(paint_tex_idx, 3u);
             let blurred_texel4 = load_encoded_paint_texel(paint_tex_idx, 4u);
             let blurred_texel5 = load_encoded_paint_texel(paint_tex_idx, 5u);
+            let blurred_texel6 = load_encoded_paint_texel(paint_tex_idx, 6u);
+            let blurred_texel7 = load_encoded_paint_texel(paint_tex_idx, 7u);
+            let blurred_texel8 = load_encoded_paint_texel(paint_tex_idx, 8u);
             final_color = alpha * calculate_blurred_rounded_rect(
                 sample_xy,
                 blurred_texel0,
@@ -529,6 +532,9 @@ fn fs_main(
                 blurred_texel3,
                 blurred_texel4,
                 blurred_texel5,
+                blurred_texel6,
+                blurred_texel7,
+                blurred_texel8,
             );
         }
     } else if color_source == COLOR_SOURCE_LAYER {
@@ -998,11 +1004,20 @@ fn get_blurred_rounded_rect_width(texel3: vec4<u32>) -> f32 { return bitcast<f32
 
 fn get_blurred_rounded_rect_height(texel3: vec4<u32>) -> f32 { return bitcast<f32>(texel3.w); }
 
-/// Per-corner outer radii, in the order [top-left, top-right, bottom-left, bottom-right].
-fn get_blurred_rounded_rect_r1(texel4: vec4<u32>) -> vec4<f32> { return bitcast<vec4<f32>>(texel4); }
+/// Per-corner outer x radii, in the order [top-left, top-right, bottom-left, bottom-right].
+fn get_blurred_rounded_rect_r1_x(texel4: vec4<u32>) -> vec4<f32> { return bitcast<vec4<f32>>(texel4); }
+
+/// Per-corner outer y radii, in the order [top-left, top-right, bottom-left, bottom-right].
+fn get_blurred_rounded_rect_r1_y(texel5: vec4<u32>) -> vec4<f32> { return bitcast<vec4<f32>>(texel5); }
 
 /// Per-corner exponents, in the order [top-left, top-right, bottom-left, bottom-right].
-fn get_blurred_rounded_rect_exponent(texel5: vec4<u32>) -> vec4<f32> { return bitcast<vec4<f32>>(texel5); }
+fn get_blurred_rounded_rect_exponent(texel6: vec4<u32>) -> vec4<f32> { return bitcast<vec4<f32>>(texel6); }
+
+/// Per-corner `r1_x^-exponent`, in the order [top-left, top-right, bottom-left, bottom-right].
+fn get_blurred_rounded_rect_w_x(texel7: vec4<u32>) -> vec4<f32> { return bitcast<vec4<f32>>(texel7); }
+
+/// Per-corner `r1_y^-exponent`, in the order [top-left, top-right, bottom-left, bottom-right].
+fn get_blurred_rounded_rect_w_y(texel8: vec4<u32>) -> vec4<f32> { return bitcast<vec4<f32>>(texel8); }
 
 // Calculate a radial gradient; matches vello_cpu implementation.
 fn calculate_radial_gradient(
@@ -1116,6 +1131,9 @@ fn calculate_blurred_rounded_rect(
     texel3: vec4<u32>,
     texel4: vec4<u32>,
     texel5: vec4<u32>,
+    texel6: vec4<u32>,
+    texel7: vec4<u32>,
+    texel8: vec4<u32>,
 ) -> vec4<f32> {
     let transform = get_blurred_rounded_rect_transform(texel0);
     let translate = get_blurred_rounded_rect_translate(texel1);
@@ -1128,8 +1146,11 @@ fn calculate_blurred_rounded_rect(
     let h = get_blurred_rounded_rect_h(texel3);
     let width = get_blurred_rounded_rect_width(texel3);
     let height = get_blurred_rounded_rect_height(texel3);
-    let corner_r1 = get_blurred_rounded_rect_r1(texel4);
-    let corner_exponent = get_blurred_rounded_rect_exponent(texel5);
+    let corner_r1_x = get_blurred_rounded_rect_r1_x(texel4);
+    let corner_r1_y = get_blurred_rounded_rect_r1_y(texel5);
+    let corner_exponent = get_blurred_rounded_rect_exponent(texel6);
+    let corner_w_x = get_blurred_rounded_rect_w_x(texel7);
+    let corner_w_y = get_blurred_rounded_rect_w_y(texel8);
 
     let local_xy = transform * fragment_pos + translate;
     // The 0.5 and 0.0 constants correspond to vello_cpu's v1 and v0 respectively.
@@ -1139,22 +1160,34 @@ fn calculate_blurred_rounded_rect(
     // Select the parameters of the corner in whose quadrant the fragment lies.
     // Per-corner values are stored as [top-left, top-right, bottom-left, bottom-right].
     let corner = select(0u, 1u, x >= 0.0) + select(0u, 2u, y >= 0.0);
-    let r1 = corner_r1[corner];
+    let r1_x = corner_r1_x[corner];
+    let r1_y = corner_r1_y[corner];
+    let w_x = corner_w_x[corner];
+    let w_y = corner_w_y[corner];
     let exponent = corner_exponent[corner];
     let recip_exponent = 1.0 / exponent;
 
-    let y0 = r1 + abs(y) - 0.5 * h;
+    let y0 = r1_y + abs(y) - 0.5 * h;
     let y1 = max(y0, 0.0);
 
-    let x0 = r1 + abs(x) - 0.5 * w;
+    let x0 = r1_x + abs(x) - 0.5 * w;
     let x1 = max(x0, 0.0);
 
-    let d_pos = pow(
-        pow(x1, exponent) + pow(y1, exponent),
+    let a = pow(x1, exponent);
+    let b = pow(y1, exponent);
+    let d_pos = pow(a + b, recip_exponent);
+    // The direction-dependent effective corner radius: the Euclidean-style radius of the
+    // superellipse in the direction of the current point, which reduces to the corner
+    // radius itself for circular corners. The epsilon terms keep the ratio well-defined
+    // when both `a` and `b` are zero.
+    const EPS: f32 = 1e-18;
+    let r_eff_computed = pow(
+        (a + b + EPS) / (a * w_x + b * w_y + EPS * 0.5 * (w_x + w_y)),
         recip_exponent,
     );
+    let r_eff = select(r_eff_computed, r1_x, r1_x == r1_y);
     let d_neg = min(max(x0, y0), 0.0);
-    let d = d_pos + d_neg - r1;
+    let d = d_pos + d_neg - r_eff;
     let blur_coverage = scale * (
         erf7(std_dev_inv * (min_edge + d)) -
         erf7(std_dev_inv * d)

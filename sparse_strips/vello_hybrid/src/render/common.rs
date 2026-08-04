@@ -466,10 +466,16 @@ pub(crate) struct GpuBlurredRoundedRect {
     pub params0: [f32; 4],
     /// Blur parameters: adjusted width, adjusted height, width, and height.
     pub params1: [f32; 4],
-    /// Per-corner outer radii, in the order [top-left, top-right, bottom-left, bottom-right].
-    pub r1: [f32; 4],
+    /// Per-corner outer x radii, in the order [top-left, top-right, bottom-left, bottom-right].
+    pub r1_x: [f32; 4],
+    /// Per-corner outer y radii, in the order [top-left, top-right, bottom-left, bottom-right].
+    pub r1_y: [f32; 4],
     /// Per-corner exponents, in the order [top-left, top-right, bottom-left, bottom-right].
     pub exponent: [f32; 4],
+    /// Per-corner `r1_x^-exponent`, in the order [top-left, top-right, bottom-left, bottom-right].
+    pub w_x: [f32; 4],
+    /// Per-corner `r1_y^-exponent`, in the order [top-left, top-right, bottom-left, bottom-right].
+    pub w_y: [f32; 4],
 }
 
 /// GPU encoded linear gradient data.

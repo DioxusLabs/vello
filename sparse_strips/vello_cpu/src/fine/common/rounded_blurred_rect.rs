@@ -183,20 +183,37 @@ impl<S: Simd> Iterator for AlphaCalculator<S> {
                 simd.select_f32x8(right, v[1], v[0]),
             )
         };
-        let r1 = select_corner(&r.r1);
+        let r1_x = select_corner(&r.r1_x);
+        let r1_y = select_corner(&r.r1_y);
+        let w_x = select_corner(&r.w_x);
+        let w_y = select_corner(&r.w_y);
         let exponent = select_corner(&r.exponent);
         let recip_exponent = select_corner(&r.recip_exponent);
 
-        // Equivalent to r1 + y.abs() - (r.h * r.v1)
-        let y0 = r1 - r.h.mul_sub(r.v1, y.abs());
+        // Equivalent to r1_y + y.abs() - (r.h * r.v1)
+        let y0 = r1_y - r.h.mul_sub(r.v1, y.abs());
         let y1 = y0.max(r.v0);
 
-        // Equivalent to r1 + x.abs() - (r.w * r.v1)
-        let x0 = r1 - r.w.mul_sub(r.v1, x.abs());
+        // Equivalent to r1_x + x.abs() - (r.w * r.v1)
+        let x0 = r1_x - r.w.mul_sub(r.v1, x.abs());
         let x1 = x0.max(r.v0);
-        let d_pos = (x1.powf(exponent) + y1.powf(exponent)).powf(recip_exponent);
+        let a = x1.powf(exponent);
+        let b = y1.powf(exponent);
+        let d_pos = (a + b).powf(recip_exponent);
+        // The direction-dependent effective corner radius: the Euclidean-style radius of
+        // the superellipse in the direction of the current point, which reduces to the
+        // corner radius itself for circular corners. The epsilon terms keep the ratio
+        // well-defined when both `a` and `b` are zero.
+        let eps = f32x8::splat(simd, 1e-18);
+        let r_eff_num = a + b + eps;
+        let r_eff_den = a.mul_add(w_x, b.mul_add(w_y, eps * (r.v1 * (w_x + w_y))));
+        let r_eff = simd.select_f32x8(
+            simd.simd_eq_f32x8(r1_x, r1_y),
+            r1_x,
+            simd.div_f32x8(r_eff_num, r_eff_den).powf(recip_exponent),
+        );
         let d_neg = x0.max(y0).min(r.v0);
-        let d = d_pos + d_neg - r1;
+        let d = d_pos + d_neg - r_eff;
         let z = r.scale
             * (f32x8::compute_erf7(self.simd, r.std_dev_inv * (r.min_edge + d))
                 - f32x8::compute_erf7(self.simd, r.std_dev_inv * d));
@@ -218,7 +235,10 @@ struct SimdRoundedBlurredRect<S: Simd> {
     pub h: f32x8<S>,
     pub width: f32x8<S>,
     pub height: f32x8<S>,
-    pub r1: [f32x8<S>; 4],
+    pub r1_x: [f32x8<S>; 4],
+    pub r1_y: [f32x8<S>; 4],
+    pub w_x: [f32x8<S>; 4],
+    pub w_y: [f32x8<S>; 4],
     pub v0: f32x8<S>,
     pub v1: f32x8<S>,
 }
@@ -232,7 +252,10 @@ impl<S: Simd> SimdRoundedBlurredRect<S> {
                 let w = f32x8::splat(s, encoded.w);
                 let width = f32x8::splat(s, encoded.width);
                 let height = f32x8::splat(s, encoded.height);
-                let r1 = encoded.r1.map(|v| f32x8::splat(s, v));
+                let r1_x = encoded.r1_x.map(|v| f32x8::splat(s, v));
+                let r1_y = encoded.r1_y.map(|v| f32x8::splat(s, v));
+                let w_x = encoded.w_x.map(|v| f32x8::splat(s, v));
+                let w_y = encoded.w_y.map(|v| f32x8::splat(s, v));
                 let exponent = encoded.exponent.map(|v| f32x8::splat(s, v));
                 let recip_exponent = encoded.recip_exponent.map(|v| f32x8::splat(s, v));
                 let scale = f32x8::splat(s, encoded.scale);
@@ -253,7 +276,10 @@ impl<S: Simd> SimdRoundedBlurredRect<S> {
                     h,
                     width,
                     height,
-                    r1,
+                    r1_x,
+                    r1_y,
+                    w_x,
+                    w_y,
                 }
             },
         )

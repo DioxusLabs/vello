@@ -860,9 +860,9 @@ pub struct GradientRange {
 /// Per-corner values are stored in the order `[top-left, top-right, bottom-left, bottom-right]`.
 #[derive(Debug)]
 pub struct EncodedBlurredRoundedRectangle {
-    /// A per-corner component for computing the blur effect.
+    /// The per-corner superellipse exponent.
     pub exponent: [f32; 4],
-    /// A per-corner component for computing the blur effect.
+    /// The reciprocal of the per-corner superellipse exponent.
     pub recip_exponent: [f32; 4],
     /// An component for computing the blur effect.
     pub scale: f32,
@@ -878,8 +878,14 @@ pub struct EncodedBlurredRoundedRectangle {
     pub width: f32,
     /// An component for computing the blur effect.
     pub height: f32,
-    /// A per-corner component for computing the blur effect.
-    pub r1: [f32; 4],
+    /// The per-corner outer radius along the x axis.
+    pub r1_x: [f32; 4],
+    /// The per-corner outer radius along the y axis.
+    pub r1_y: [f32; 4],
+    /// `r1_x^-exponent`, per corner.
+    pub w_x: [f32; 4],
+    /// `r1_y^-exponent`, per corner.
+    pub w_y: [f32; 4],
     /// Whether to paint the inverse (`1 - alpha`) of the blur coverage.
     ///
     /// When `true`, the paint is fully opaque outside the blurred rectangle and fades to
@@ -932,22 +938,38 @@ impl EncodeExt for BlurredRoundedRectangle {
         let min_edge = width.min(height);
         let rmax = 0.5 * min_edge;
 
-        // Per-corner radii, in the order [top-left, top-right, bottom-left, bottom-right].
+        // Per-corner elliptical radii, in the order
+        // [top-left, top-right, bottom-left, bottom-right]. The x radius is clamped to half
+        // the rectangle's width and the y radius to half its height.
         let radii = [
             self.radii.top_left,
             self.radii.top_right,
             self.radii.bottom_left,
             self.radii.bottom_right,
         ]
-        .map(|r| (r as f32).clamp(0.0, rmax));
+        .map(|r| {
+            (
+                (r.x as f32).clamp(0.0, 0.5 * width),
+                (r.y as f32).clamp(0.0, 0.5 * height),
+            )
+        });
 
-        let r1 = radii.map(|radius| radius.hypot(std_dev * 2.0).min(rmax));
+        let r1_x = radii.map(|(rx, _)| rx.hypot(std_dev * 2.0).min(0.5 * width));
+        let r1_y = radii.map(|(_, ry)| ry.hypot(std_dev * 2.0).min(0.5 * height));
+        // The superellipse exponent of each corner is derived from the corner's geometric
+        // mean radius, which for circular corners matches the uniform-radius formulation.
         let mut exponent = [0.0; 4];
         let mut recip_exponent = [0.0; 4];
+        let mut w_x = [0.0; 4];
+        let mut w_y = [0.0; 4];
         for i in 0..4 {
-            let r0 = radii[i].hypot(std_dev * 1.15).min(rmax);
-            exponent[i] = 2.0 * r1[i] / r0;
+            let rg = (radii[i].0 * radii[i].1).sqrt();
+            let r0 = rg.hypot(std_dev * 1.15).min(rmax);
+            let r1 = rg.hypot(std_dev * 2.0).min(rmax);
+            exponent[i] = 2.0 * r1 / r0;
             recip_exponent[i] = exponent[i].recip();
+            w_x[i] = r1_x[i].powf(-exponent[i]);
+            w_y[i] = r1_y[i].powf(-exponent[i]);
         }
 
         let std_dev_inv = std_dev.recip();
@@ -960,7 +982,7 @@ impl EncodeExt for BlurredRoundedRectangle {
         let w = width + delta.min(0.0);
         let h = height - delta.max(0.0);
 
-        let mean_radius = 0.25 * (radii[0] + radii[1] + radii[2] + radii[3]);
+        let mean_radius = 0.25 * radii.iter().map(|&(rx, ry)| (rx * ry).sqrt()).sum::<f32>();
         let scale = 0.5 * compute_erf7(std_dev_inv * 0.5 * (w.max(h) - 0.5 * mean_radius));
 
         let encoded = EncodedBlurredRoundedRectangle {
@@ -969,7 +991,10 @@ impl EncodeExt for BlurredRoundedRectangle {
             width,
             height,
             scale,
-            r1,
+            r1_x,
+            r1_y,
+            w_x,
+            w_y,
             std_dev_inv,
             min_edge,
             invert: self.invert,

@@ -898,8 +898,11 @@ impl WebGlRenderer {
             invert: u32::from(rect.invert),
             params0: [rect.scale, rect.std_dev_inv, rect.min_edge, 0.0],
             params1: [rect.w, rect.h, rect.width, rect.height],
-            r1: rect.r1,
+            r1_x: rect.r1_x,
+            r1_y: rect.r1_y,
             exponent: rect.exponent,
+            w_x: rect.w_x,
+            w_y: rect.w_y,
         })
     }
 }

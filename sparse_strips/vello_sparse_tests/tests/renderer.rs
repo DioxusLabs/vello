@@ -6,8 +6,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 
 use glifo::GlyphRunBackend;
+use vello_common::blurred_rounded_rect::CornerRadii;
 use vello_common::filter_effects::Filter;
-use vello_common::kurbo::{Affine, BezPath, Rect, RoundedRectRadii, Stroke};
+use vello_common::kurbo::{Affine, BezPath, Rect, Stroke};
 use vello_common::mask::Mask;
 use vello_common::paint::{ImageId, ImageSource, PaintType, Tint};
 use vello_common::peniko::{BlendMode, Fill, FontData, ImageQuality};
@@ -38,7 +39,7 @@ pub(crate) trait Renderer: Sized {
     fn fill_blurred_rounded_rect(
         &mut self,
         rect: &Rect,
-        radii: RoundedRectRadii,
+        radii: CornerRadii,
         std_dev: f32,
         invert: bool,
     );
@@ -129,7 +130,7 @@ impl Renderer for CpuRenderer {
     fn fill_blurred_rounded_rect(
         &mut self,
         rect: &Rect,
-        radii: RoundedRectRadii,
+        radii: CornerRadii,
         std_dev: f32,
         invert: bool,
     ) {
@@ -415,7 +416,7 @@ impl Renderer for HybridRenderer {
     fn fill_blurred_rounded_rect(
         &mut self,
         rect: &Rect,
-        radii: RoundedRectRadii,
+        radii: CornerRadii,
         std_dev: f32,
         invert: bool,
     ) {
@@ -794,7 +795,7 @@ impl Renderer for HybridRenderer {
     fn fill_blurred_rounded_rect(
         &mut self,
         rect: &Rect,
-        radii: RoundedRectRadii,
+        radii: CornerRadii,
         std_dev: f32,
         invert: bool,
     ) {

@@ -14,7 +14,7 @@ This release has an [MSRV][] of 1.88.
 
 ### Changed
 
-- Breaking change: `RenderContext::fill_blurred_rounded_rect` now takes a `RoundedRectRadii`, allowing a different radius per corner. A uniform radius can be passed as `radius.into()`.
+- Breaking change: `RenderContext::fill_blurred_rounded_rect` now takes a `CornerRadii`, allowing a different, possibly elliptical, radius per corner. A uniform radius or a `RoundedRectRadii` can be passed as `radii.into()`.
 
 ## [0.1.0][] - 2026-07-29
 

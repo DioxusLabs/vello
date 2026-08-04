@@ -13,14 +13,14 @@ use alloc::vec::Vec;
 use core::cell::RefCell;
 use core::ops::Range;
 use vello_common::TextureId;
-use vello_common::blurred_rounded_rect::BlurredRoundedRectangle;
+use vello_common::blurred_rounded_rect::{BlurredRoundedRectangle, CornerRadii};
 use vello_common::clip::PathDataRef;
 use vello_common::encode::{EncodeExt, EncodedExternalTexture, EncodedPaint};
 use vello_common::fearless_simd::Level;
 use vello_common::filter::FilterData;
 use vello_common::filter_effects::Filter;
 use vello_common::geometry::{RectU16, SizeU16};
-use vello_common::kurbo::{Affine, BezPath, Rect, RoundedRectRadii, Shape, Stroke};
+use vello_common::kurbo::{Affine, BezPath, Rect, Shape, Stroke};
 use vello_common::mask::Mask;
 use vello_common::multi_atlas::AtlasConfig;
 use vello_common::paint::{Paint, PaintType, Tint};
@@ -632,8 +632,7 @@ impl Scene {
 
     /// Fill a blurred rectangle with the given corner radii and standard deviation.
     ///
-    /// Each corner may have a different (scalar) radius; elliptical corner radii are not
-    /// supported.
+    /// Each corner may have a different, possibly elliptical, radius.
     ///
     /// When `invert` is `true`, the inverse (`1 - alpha`) of the blur coverage is painted: the
     /// paint is fully opaque outside the blurred rectangle and fades to transparent inside it. This
@@ -644,7 +643,7 @@ impl Scene {
     pub fn fill_blurred_rounded_rect(
         &mut self,
         rect: &Rect,
-        radii: RoundedRectRadii,
+        radii: CornerRadii,
         std_dev: f32,
         invert: bool,
     ) {

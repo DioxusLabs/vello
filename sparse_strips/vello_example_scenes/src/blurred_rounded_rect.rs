@@ -3,7 +3,8 @@
 
 //! Scene demonstrating blurred rounded rectangle rendering.
 
-use vello_common::kurbo::{Affine, Rect, RoundedRectRadii};
+use vello_common::blurred_rounded_rect::CornerRadii;
+use vello_common::kurbo::{Affine, Rect, RoundedRectRadii, Vec2};
 use vello_common::peniko::color::palette;
 use vello_common::peniko::color::{AlphaColor, Srgb};
 
@@ -92,7 +93,22 @@ pub fn render(ctx: &mut impl RenderingContext, root_transform: Affine) {
         scene_transform * Affine::translate((900.0, 1000.0)),
         rect,
         palette::css::BLACK,
-        RoundedRectRadii::new(120.0, 0.0, 60.0, 20.0),
+        RoundedRectRadii::new(120.0, 0.0, 60.0, 20.0).into(),
+        45.0,
+    );
+
+    // Elliptical corner radii.
+    draw_blurred_rect(
+        ctx,
+        scene_transform * Affine::translate((300.0, 1000.0)),
+        rect,
+        palette::css::BLACK,
+        CornerRadii::new(
+            Vec2::new(150.0, 60.0),
+            Vec2::new(30.0, 120.0),
+            Vec2::new(0.0, 0.0),
+            Vec2::new(80.0, 20.0),
+        ),
         45.0,
     );
 
@@ -111,7 +127,7 @@ fn draw_blurred_rect(
     transform: Affine,
     rect: Rect,
     color: AlphaColor<Srgb>,
-    radii: RoundedRectRadii,
+    radii: CornerRadii,
     std_dev: f32,
 ) {
     ctx.set_transform(transform);
