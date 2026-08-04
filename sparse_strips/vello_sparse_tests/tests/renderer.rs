@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use glifo::GlyphRunBackend;
 use vello_common::filter_effects::Filter;
-use vello_common::kurbo::{Affine, BezPath, Rect, Stroke};
+use vello_common::kurbo::{Affine, BezPath, Rect, RoundedRectRadii, Stroke};
 use vello_common::mask::Mask;
 use vello_common::paint::{ImageId, ImageSource, PaintType, Tint};
 use vello_common::peniko::{BlendMode, Fill, FontData, ImageQuality};
@@ -35,7 +35,13 @@ pub(crate) trait Renderer: Sized {
     fn fill_path(&mut self, path: &BezPath);
     fn stroke_path(&mut self, path: &BezPath);
     fn fill_rect(&mut self, rect: &Rect);
-    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32, invert: bool);
+    fn fill_blurred_rounded_rect(
+        &mut self,
+        rect: &Rect,
+        radii: RoundedRectRadii,
+        std_dev: f32,
+        invert: bool,
+    );
     fn stroke_rect(&mut self, rect: &Rect);
     fn glyph_run(
         &mut self,
@@ -120,9 +126,15 @@ impl Renderer for CpuRenderer {
         self.ctx.fill_rect(rect);
     }
 
-    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32, invert: bool) {
+    fn fill_blurred_rounded_rect(
+        &mut self,
+        rect: &Rect,
+        radii: RoundedRectRadii,
+        std_dev: f32,
+        invert: bool,
+    ) {
         self.ctx
-            .fill_blurred_rounded_rect(rect, radius, std_dev, invert);
+            .fill_blurred_rounded_rect(rect, radii, std_dev, invert);
     }
 
     fn stroke_rect(&mut self, rect: &Rect) {
@@ -400,9 +412,15 @@ impl Renderer for HybridRenderer {
         self.scene.fill_rect(rect);
     }
 
-    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32, invert: bool) {
+    fn fill_blurred_rounded_rect(
+        &mut self,
+        rect: &Rect,
+        radii: RoundedRectRadii,
+        std_dev: f32,
+        invert: bool,
+    ) {
         self.scene
-            .fill_blurred_rounded_rect(rect, radius, std_dev, invert);
+            .fill_blurred_rounded_rect(rect, radii, std_dev, invert);
     }
 
     fn stroke_rect(&mut self, rect: &Rect) {
@@ -773,9 +791,15 @@ impl Renderer for HybridRenderer {
         self.scene.fill_rect(rect);
     }
 
-    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32, invert: bool) {
+    fn fill_blurred_rounded_rect(
+        &mut self,
+        rect: &Rect,
+        radii: RoundedRectRadii,
+        std_dev: f32,
+        invert: bool,
+    ) {
         self.scene
-            .fill_blurred_rounded_rect(rect, radius, std_dev, invert);
+            .fill_blurred_rounded_rect(rect, radii, std_dev, invert);
     }
 
     fn stroke_rect(&mut self, rect: &Rect) {

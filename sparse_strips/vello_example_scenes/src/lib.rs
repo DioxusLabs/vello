@@ -23,7 +23,7 @@ pub mod text;
 use glifo::GlyphRunBackend;
 use vello_common::filter_effects::Filter;
 use vello_common::kurbo::Affine;
-pub use vello_common::kurbo::{BezPath, Rect, Shape, Stroke};
+pub use vello_common::kurbo::{BezPath, Rect, RoundedRectRadii, Shape, Stroke};
 pub use vello_common::mask::Mask;
 use vello_common::paint::ImageSource;
 pub use vello_common::paint::{Paint, PaintType};
@@ -81,7 +81,7 @@ pub trait RenderingContext: Sized {
     /// Fill a rectangle with the current paint.
     fn fill_rect(&mut self, rect: &Rect);
     /// Fill a blurred rounded rectangle with the current solid paint.
-    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32);
+    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radii: RoundedRectRadii, std_dev: f32);
     /// Create a glyph run builder for text rendering.
     fn glyph_run<'a>(
         &'a mut self,
@@ -172,8 +172,8 @@ impl RenderingContext for RenderContext {
         self.fill_rect(rect);
     }
 
-    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32) {
-        self.fill_blurred_rounded_rect(rect, radius, std_dev, false);
+    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radii: RoundedRectRadii, std_dev: f32) {
+        self.fill_blurred_rounded_rect(rect, radii, std_dev, false);
     }
 
     fn glyph_run<'a>(
@@ -277,8 +277,8 @@ impl RenderingContext for Scene {
         self.fill_rect(rect);
     }
 
-    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32) {
-        self.fill_blurred_rounded_rect(rect, radius, std_dev, false);
+    fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radii: RoundedRectRadii, std_dev: f32) {
+        self.fill_blurred_rounded_rect(rect, radii, std_dev, false);
     }
 
     fn glyph_run<'a>(

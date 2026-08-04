@@ -462,14 +462,14 @@ pub(crate) struct GpuBlurredRoundedRect {
     pub color: u32,
     /// Whether to paint the inverse (`1 - alpha`) of the blur coverage
     pub invert: u32,
-    /// Blur parameters: exponent, reciprocal exponent, scale, and inverse standard deviation.
+    /// Blur parameters: scale, inverse standard deviation, and minimum edge length (one unused).
     pub params0: [f32; 4],
-    /// Blur parameters: minimum edge length, adjusted width, adjusted height, and outer radius.
+    /// Blur parameters: adjusted width, adjusted height, width, and height.
     pub params1: [f32; 4],
-    /// Blur parameters [width, height].
-    pub size: [f32; 2],
-    /// Padding for 16-byte alignment.
-    pub _padding1: [u32; 2],
+    /// Per-corner outer radii, in the order [top-left, top-right, bottom-left, bottom-right].
+    pub r1: [f32; 4],
+    /// Per-corner exponents, in the order [top-left, top-right, bottom-left, bottom-right].
+    pub exponent: [f32; 4],
 }
 
 /// GPU encoded linear gradient data.

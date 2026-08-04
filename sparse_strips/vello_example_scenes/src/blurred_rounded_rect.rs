@@ -3,7 +3,7 @@
 
 //! Scene demonstrating blurred rounded rectangle rendering.
 
-use vello_common::kurbo::{Affine, Rect};
+use vello_common::kurbo::{Affine, Rect, RoundedRectRadii};
 use vello_common::peniko::color::palette;
 use vello_common::peniko::color::{AlphaColor, Srgb};
 
@@ -53,7 +53,7 @@ pub fn render(ctx: &mut impl RenderingContext, root_transform: Affine) {
         scene_transform * Affine::translate((300.0, 300.0)),
         rect,
         palette::css::BLUE,
-        50.0,
+        50.0.into(),
         45.0,
     );
 
@@ -64,7 +64,7 @@ pub fn render(ctx: &mut impl RenderingContext, root_transform: Affine) {
             * Affine::skew(20_f64.to_radians().tan(), 0.0),
         rect,
         palette::css::BLACK,
-        50.0,
+        50.0.into(),
         45.0,
     );
 
@@ -73,7 +73,7 @@ pub fn render(ctx: &mut impl RenderingContext, root_transform: Affine) {
         scene_transform,
         Rect::new(100.0, 800.0, 400.0, 1100.0),
         palette::css::BLACK,
-        150.0,
+        150.0.into(),
         45.0,
     );
 
@@ -82,7 +82,17 @@ pub fn render(ctx: &mut impl RenderingContext, root_transform: Affine) {
         scene_transform,
         Rect::new(600.0, 800.0, 900.0, 900.0),
         palette::css::BLACK,
-        150.0,
+        150.0.into(),
+        45.0,
+    );
+
+    // Non-uniform corner radii.
+    draw_blurred_rect(
+        ctx,
+        scene_transform * Affine::translate((900.0, 1000.0)),
+        rect,
+        palette::css::BLACK,
+        RoundedRectRadii::new(120.0, 0.0, 60.0, 20.0),
         45.0,
     );
 
@@ -91,7 +101,7 @@ pub fn render(ctx: &mut impl RenderingContext, root_transform: Affine) {
         scene_transform * Affine::translate((600.0, 600.0)) * Affine::scale_non_uniform(2.2, 0.9),
         rect,
         palette::css::BLACK,
-        50.0,
+        50.0.into(),
         30.0,
     );
 }
@@ -101,10 +111,10 @@ fn draw_blurred_rect(
     transform: Affine,
     rect: Rect,
     color: AlphaColor<Srgb>,
-    radius: f32,
+    radii: RoundedRectRadii,
     std_dev: f32,
 ) {
     ctx.set_transform(transform);
     ctx.set_paint(color);
-    ctx.fill_blurred_rounded_rect(&rect, radius, std_dev);
+    ctx.fill_blurred_rounded_rect(&rect, radii, std_dev);
 }

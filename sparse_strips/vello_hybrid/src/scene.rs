@@ -20,7 +20,7 @@ use vello_common::fearless_simd::Level;
 use vello_common::filter::FilterData;
 use vello_common::filter_effects::Filter;
 use vello_common::geometry::{RectU16, SizeU16};
-use vello_common::kurbo::{Affine, BezPath, Rect, Shape, Stroke};
+use vello_common::kurbo::{Affine, BezPath, Rect, RoundedRectRadii, Shape, Stroke};
 use vello_common::mask::Mask;
 use vello_common::multi_atlas::AtlasConfig;
 use vello_common::paint::{Paint, PaintType, Tint};
@@ -630,7 +630,10 @@ impl Scene {
         self.stroke_path(&rect.to_path(DEFAULT_TOLERANCE));
     }
 
-    /// Fill a blurred rectangle with the given corner radius and standard deviation.
+    /// Fill a blurred rectangle with the given corner radii and standard deviation.
+    ///
+    /// Each corner may have a different (scalar) radius; elliptical corner radii are not
+    /// supported.
     ///
     /// When `invert` is `true`, the inverse (`1 - alpha`) of the blur coverage is painted: the
     /// paint is fully opaque outside the blurred rectangle and fades to transparent inside it. This
@@ -641,7 +644,7 @@ impl Scene {
     pub fn fill_blurred_rounded_rect(
         &mut self,
         rect: &Rect,
-        radius: f32,
+        radii: RoundedRectRadii,
         std_dev: f32,
         invert: bool,
     ) {
@@ -658,7 +661,7 @@ impl Scene {
             let blurred_rect = BlurredRoundedRectangle {
                 rect,
                 color,
-                radius,
+                radii,
                 std_dev,
                 invert,
             };

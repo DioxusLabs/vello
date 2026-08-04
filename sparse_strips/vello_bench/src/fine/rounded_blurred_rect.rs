@@ -35,7 +35,7 @@ fn base<S: Simd, N: FineKernel<S>>(b: &mut Bencher<'_>, fine: &mut Fine<S, N>, t
     let rect = BlurredRoundedRectangle {
         rect: Rect::new(0.0, 0.0, BENCH_WIDTH as f64, Tile::HEIGHT as f64),
         color: GREEN,
-        radius: 30.0,
+        radii: 30.0.into(),
         std_dev: 10.0,
         invert: false,
     };

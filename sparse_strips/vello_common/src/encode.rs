@@ -856,12 +856,14 @@ pub struct GradientRange {
 }
 
 /// An encoded blurred, rounded rectangle.
+///
+/// Per-corner values are stored in the order `[top-left, top-right, bottom-left, bottom-right]`.
 #[derive(Debug)]
 pub struct EncodedBlurredRoundedRectangle {
-    /// An component for computing the blur effect.
-    pub exponent: f32,
-    /// An component for computing the blur effect.
-    pub recip_exponent: f32,
+    /// A per-corner component for computing the blur effect.
+    pub exponent: [f32; 4],
+    /// A per-corner component for computing the blur effect.
+    pub recip_exponent: [f32; 4],
     /// An component for computing the blur effect.
     pub scale: f32,
     /// An component for computing the blur effect.
@@ -876,8 +878,8 @@ pub struct EncodedBlurredRoundedRectangle {
     pub width: f32,
     /// An component for computing the blur effect.
     pub height: f32,
-    /// An component for computing the blur effect.
-    pub r1: f32,
+    /// A per-corner component for computing the blur effect.
+    pub r1: [f32; 4],
     /// Whether to paint the inverse (`1 - alpha`) of the blur coverage.
     ///
     /// When `true`, the paint is fully opaque outside the blurred rectangle and fades to
@@ -923,17 +925,30 @@ impl EncodeExt for BlurredRoundedRectangle {
 
         let width = rect.width() as f32;
         let height = rect.height() as f32;
-        let radius = self.radius.min(0.5 * width.min(height));
 
         // To avoid divide by 0; potentially should be a bigger number for antialiasing.
         let std_dev = self.std_dev.max(1e-6);
 
         let min_edge = width.min(height);
         let rmax = 0.5 * min_edge;
-        let r0 = radius.hypot(std_dev * 1.15).min(rmax);
-        let r1 = radius.hypot(std_dev * 2.0).min(rmax);
 
-        let exponent = 2.0 * r1 / r0;
+        // Per-corner radii, in the order [top-left, top-right, bottom-left, bottom-right].
+        let radii = [
+            self.radii.top_left,
+            self.radii.top_right,
+            self.radii.bottom_left,
+            self.radii.bottom_right,
+        ]
+        .map(|r| (r as f32).clamp(0.0, rmax));
+
+        let r1 = radii.map(|radius| radius.hypot(std_dev * 2.0).min(rmax));
+        let mut exponent = [0.0; 4];
+        let mut recip_exponent = [0.0; 4];
+        for i in 0..4 {
+            let r0 = radii[i].hypot(std_dev * 1.15).min(rmax);
+            exponent[i] = 2.0 * r1[i] / r0;
+            recip_exponent[i] = exponent[i].recip();
+        }
 
         let std_dev_inv = std_dev.recip();
 
@@ -945,8 +960,8 @@ impl EncodeExt for BlurredRoundedRectangle {
         let w = width + delta.min(0.0);
         let h = height - delta.max(0.0);
 
-        let recip_exponent = exponent.recip();
-        let scale = 0.5 * compute_erf7(std_dev_inv * 0.5 * (w.max(h) - 0.5 * radius));
+        let mean_radius = 0.25 * (radii[0] + radii[1] + radii[2] + radii[3]);
+        let scale = 0.5 * compute_erf7(std_dev_inv * 0.5 * (w.max(h) - 0.5 * mean_radius));
 
         let encoded = EncodedBlurredRoundedRectangle {
             exponent,

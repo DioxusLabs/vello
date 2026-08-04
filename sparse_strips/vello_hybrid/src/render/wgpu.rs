@@ -859,15 +859,10 @@ impl Renderer {
             transform: rect.transform.as_coeffs().map(|x| x as f32),
             color: rect.color.as_premul_rgba8().to_u32(),
             invert: u32::from(rect.invert),
-            params0: [
-                rect.exponent,
-                rect.recip_exponent,
-                rect.scale,
-                rect.std_dev_inv,
-            ],
-            params1: [rect.min_edge, rect.w, rect.h, rect.r1],
-            size: [rect.width, rect.height],
-            _padding1: [0, 0],
+            params0: [rect.scale, rect.std_dev_inv, rect.min_edge, 0.0],
+            params1: [rect.w, rect.h, rect.width, rect.height],
+            r1: rect.r1,
+            exponent: rect.exponent,
         })
     }
 }

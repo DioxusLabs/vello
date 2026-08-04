@@ -3,7 +3,7 @@
 
 //! Blurred, rounded rectangles.
 use crate::color::{AlphaColor, Srgb};
-use crate::kurbo::Rect;
+use crate::kurbo::{Rect, RoundedRectRadii};
 
 /// A blurred, rounded rectangle.
 #[derive(Debug)]
@@ -12,8 +12,11 @@ pub struct BlurredRoundedRectangle {
     pub rect: Rect,
     /// The color of the blurred rectangle.
     pub color: AlphaColor<Srgb>,
-    /// The radius of the rounded rectangle's corners.
-    pub radius: f32,
+    /// The radii of the rounded rectangle's corners.
+    ///
+    /// Each corner may have a different radius. Note that only scalar (circular) corner
+    /// radii are supported; elliptical radii are not.
+    pub radii: RoundedRectRadii,
     /// The standard deviation of the blur effect.
     pub std_dev: f32,
     /// Whether to paint the inverse (`1 - alpha`) of the blur coverage.

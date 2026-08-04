@@ -520,6 +520,7 @@ fn fs_main(
             let blurred_texel2 = load_encoded_paint_texel(paint_tex_idx, 2u);
             let blurred_texel3 = load_encoded_paint_texel(paint_tex_idx, 3u);
             let blurred_texel4 = load_encoded_paint_texel(paint_tex_idx, 4u);
+            let blurred_texel5 = load_encoded_paint_texel(paint_tex_idx, 5u);
             final_color = alpha * calculate_blurred_rounded_rect(
                 sample_xy,
                 blurred_texel0,
@@ -527,6 +528,7 @@ fn fs_main(
                 blurred_texel2,
                 blurred_texel3,
                 blurred_texel4,
+                blurred_texel5,
             );
         }
     } else if color_source == COLOR_SOURCE_LAYER {
@@ -982,25 +984,25 @@ fn get_blurred_rounded_rect_color(texel1: vec4<u32>) -> vec4<f32> { return unpac
 /// Whether to paint the inverse (`1 - alpha`) of the blur coverage.
 fn get_blurred_rounded_rect_invert(texel1: vec4<u32>) -> u32 { return texel1.w; }
 
-fn get_blurred_rounded_rect_exponent(texel2: vec4<u32>) -> f32 { return bitcast<f32>(texel2.x); }
+fn get_blurred_rounded_rect_scale(texel2: vec4<u32>) -> f32 { return bitcast<f32>(texel2.x); }
 
-fn get_blurred_rounded_rect_recip_exponent(texel2: vec4<u32>) -> f32 { return bitcast<f32>(texel2.y); }
+fn get_blurred_rounded_rect_std_dev_inv(texel2: vec4<u32>) -> f32 { return bitcast<f32>(texel2.y); }
 
-fn get_blurred_rounded_rect_scale(texel2: vec4<u32>) -> f32 { return bitcast<f32>(texel2.z); }
+fn get_blurred_rounded_rect_min_edge(texel2: vec4<u32>) -> f32 { return bitcast<f32>(texel2.z); }
 
-fn get_blurred_rounded_rect_std_dev_inv(texel2: vec4<u32>) -> f32 { return bitcast<f32>(texel2.w); }
+fn get_blurred_rounded_rect_w(texel3: vec4<u32>) -> f32 { return bitcast<f32>(texel3.x); }
 
-fn get_blurred_rounded_rect_min_edge(texel3: vec4<u32>) -> f32 { return bitcast<f32>(texel3.x); }
+fn get_blurred_rounded_rect_h(texel3: vec4<u32>) -> f32 { return bitcast<f32>(texel3.y); }
 
-fn get_blurred_rounded_rect_w(texel3: vec4<u32>) -> f32 { return bitcast<f32>(texel3.y); }
+fn get_blurred_rounded_rect_width(texel3: vec4<u32>) -> f32 { return bitcast<f32>(texel3.z); }
 
-fn get_blurred_rounded_rect_h(texel3: vec4<u32>) -> f32 { return bitcast<f32>(texel3.z); }
+fn get_blurred_rounded_rect_height(texel3: vec4<u32>) -> f32 { return bitcast<f32>(texel3.w); }
 
-fn get_blurred_rounded_rect_r1(texel3: vec4<u32>) -> f32 { return bitcast<f32>(texel3.w); }
+/// Per-corner outer radii, in the order [top-left, top-right, bottom-left, bottom-right].
+fn get_blurred_rounded_rect_r1(texel4: vec4<u32>) -> vec4<f32> { return bitcast<vec4<f32>>(texel4); }
 
-fn get_blurred_rounded_rect_width(texel4: vec4<u32>) -> f32 { return bitcast<f32>(texel4.x); }
-
-fn get_blurred_rounded_rect_height(texel4: vec4<u32>) -> f32 { return bitcast<f32>(texel4.y); }
+/// Per-corner exponents, in the order [top-left, top-right, bottom-left, bottom-right].
+fn get_blurred_rounded_rect_exponent(texel5: vec4<u32>) -> vec4<f32> { return bitcast<vec4<f32>>(texel5); }
 
 // Calculate a radial gradient; matches vello_cpu implementation.
 fn calculate_radial_gradient(
@@ -1113,29 +1115,37 @@ fn calculate_blurred_rounded_rect(
     texel2: vec4<u32>,
     texel3: vec4<u32>,
     texel4: vec4<u32>,
+    texel5: vec4<u32>,
 ) -> vec4<f32> {
     let transform = get_blurred_rounded_rect_transform(texel0);
     let translate = get_blurred_rounded_rect_translate(texel1);
     let color = get_blurred_rounded_rect_color(texel1);
     let invert = get_blurred_rounded_rect_invert(texel1);
-    let exponent = get_blurred_rounded_rect_exponent(texel2);
-    let recip_exponent = get_blurred_rounded_rect_recip_exponent(texel2);
     let scale = get_blurred_rounded_rect_scale(texel2);
     let std_dev_inv = get_blurred_rounded_rect_std_dev_inv(texel2);
-    let min_edge = get_blurred_rounded_rect_min_edge(texel3);
+    let min_edge = get_blurred_rounded_rect_min_edge(texel2);
     let w = get_blurred_rounded_rect_w(texel3);
     let h = get_blurred_rounded_rect_h(texel3);
-    let r1 = get_blurred_rounded_rect_r1(texel3);
-    let width = get_blurred_rounded_rect_width(texel4);
-    let height = get_blurred_rounded_rect_height(texel4);
+    let width = get_blurred_rounded_rect_width(texel3);
+    let height = get_blurred_rounded_rect_height(texel3);
+    let corner_r1 = get_blurred_rounded_rect_r1(texel4);
+    let corner_exponent = get_blurred_rounded_rect_exponent(texel5);
 
     let local_xy = transform * fragment_pos + translate;
     // The 0.5 and 0.0 constants correspond to vello_cpu's v1 and v0 respectively.
     let y = local_xy.y - 0.5 * height;
+    let x = local_xy.x - 0.5 * width;
+
+    // Select the parameters of the corner in whose quadrant the fragment lies.
+    // Per-corner values are stored as [top-left, top-right, bottom-left, bottom-right].
+    let corner = select(0u, 1u, x >= 0.0) + select(0u, 2u, y >= 0.0);
+    let r1 = corner_r1[corner];
+    let exponent = corner_exponent[corner];
+    let recip_exponent = 1.0 / exponent;
+
     let y0 = r1 + abs(y) - 0.5 * h;
     let y1 = max(y0, 0.0);
 
-    let x = local_xy.x - 0.5 * width;
     let x0 = r1 + abs(x) - 0.5 * w;
     let x1 = max(x0, 0.0);
 

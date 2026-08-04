@@ -169,17 +169,34 @@ impl<S: Simd> Iterator for AlphaCalculator<S> {
         let r = &self.r;
 
         let y = j - r.v1 * r.height;
-        // Equivalent to r.r1 + y.abs() - (r.h * r.v1)
-        let y0 = r.r1 - r.h.mul_sub(r.v1, y.abs());
+        let x = i - r.v1 * r.width;
+
+        // Select the parameters of the corner in whose quadrant the pixel lies.
+        // Per-corner values are stored as [top-left, top-right, bottom-left, bottom-right].
+        let simd = self.simd;
+        let right = simd.simd_ge_f32x8(x, r.v0);
+        let bottom = simd.simd_ge_f32x8(y, r.v0);
+        let select_corner = |v: &[f32x8<S>; 4]| {
+            simd.select_f32x8(
+                bottom,
+                simd.select_f32x8(right, v[3], v[2]),
+                simd.select_f32x8(right, v[1], v[0]),
+            )
+        };
+        let r1 = select_corner(&r.r1);
+        let exponent = select_corner(&r.exponent);
+        let recip_exponent = select_corner(&r.recip_exponent);
+
+        // Equivalent to r1 + y.abs() - (r.h * r.v1)
+        let y0 = r1 - r.h.mul_sub(r.v1, y.abs());
         let y1 = y0.max(r.v0);
 
-        let x = i - r.v1 * r.width;
-        // Equivalent to r.r1 + x.abs() - (r.w * r.v1)
-        let x0 = r.r1 - r.w.mul_sub(r.v1, x.abs());
+        // Equivalent to r1 + x.abs() - (r.w * r.v1)
+        let x0 = r1 - r.w.mul_sub(r.v1, x.abs());
         let x1 = x0.max(r.v0);
-        let d_pos = (x1.powf(r.exponent) + y1.powf(r.exponent)).powf(r.recip_exponent);
+        let d_pos = (x1.powf(exponent) + y1.powf(exponent)).powf(recip_exponent);
         let d_neg = x0.max(y0).min(r.v0);
-        let d = d_pos + d_neg - r.r1;
+        let d = d_pos + d_neg - r1;
         let z = r.scale
             * (f32x8::compute_erf7(self.simd, r.std_dev_inv * (r.min_edge + d))
                 - f32x8::compute_erf7(self.simd, r.std_dev_inv * d));
@@ -192,8 +209,8 @@ impl<S: Simd> Iterator for AlphaCalculator<S> {
 
 #[derive(Debug)]
 struct SimdRoundedBlurredRect<S: Simd> {
-    pub exponent: f32,
-    pub recip_exponent: f32,
+    pub exponent: [f32x8<S>; 4],
+    pub recip_exponent: [f32x8<S>; 4],
     pub scale: f32x8<S>,
     pub std_dev_inv: f32x8<S>,
     pub min_edge: f32x8<S>,
@@ -201,7 +218,7 @@ struct SimdRoundedBlurredRect<S: Simd> {
     pub h: f32x8<S>,
     pub width: f32x8<S>,
     pub height: f32x8<S>,
-    pub r1: f32x8<S>,
+    pub r1: [f32x8<S>; 4],
     pub v0: f32x8<S>,
     pub v1: f32x8<S>,
 }
@@ -215,9 +232,9 @@ impl<S: Simd> SimdRoundedBlurredRect<S> {
                 let w = f32x8::splat(s, encoded.w);
                 let width = f32x8::splat(s, encoded.width);
                 let height = f32x8::splat(s, encoded.height);
-                let r1 = f32x8::splat(s, encoded.r1);
-                let exponent = encoded.exponent;
-                let recip_exponent = encoded.recip_exponent;
+                let r1 = encoded.r1.map(|v| f32x8::splat(s, v));
+                let exponent = encoded.exponent.map(|v| f32x8::splat(s, v));
+                let recip_exponent = encoded.recip_exponent.map(|v| f32x8::splat(s, v));
                 let scale = f32x8::splat(s, encoded.scale);
                 let min_edge = f32x8::splat(s, encoded.min_edge);
                 let std_dev_inv = f32x8::splat(s, encoded.std_dev_inv);
@@ -248,7 +265,7 @@ trait FloatExt<S: Simd> {
     // explanation of this approximation to the erf function.
     /// Approximate the erf function.
     fn compute_erf7(simd: S, x: Self) -> Self;
-    fn powf(self, x: f32) -> Self;
+    fn powf(self, x: Self) -> Self;
 }
 
 impl<S: Simd> FloatExt<S> for f32x8<S> {
@@ -269,16 +286,16 @@ impl<S: Simd> FloatExt<S> for f32x8<S> {
     }
 
     #[inline]
-    fn powf(mut self, x: f32) -> Self {
+    fn powf(mut self, x: Self) -> Self {
         // TODO: SIMD
-        self[0] = self[0].powf(x);
-        self[1] = self[1].powf(x);
-        self[2] = self[2].powf(x);
-        self[3] = self[3].powf(x);
-        self[4] = self[4].powf(x);
-        self[5] = self[5].powf(x);
-        self[6] = self[6].powf(x);
-        self[7] = self[7].powf(x);
+        self[0] = self[0].powf(x[0]);
+        self[1] = self[1].powf(x[1]);
+        self[2] = self[2].powf(x[2]);
+        self[3] = self[3].powf(x[3]);
+        self[4] = self[4].powf(x[4]);
+        self[5] = self[5].powf(x[5]);
+        self[6] = self[6].powf(x[6]);
+        self[7] = self[7].powf(x[7]);
 
         self
     }
