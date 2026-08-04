@@ -176,6 +176,7 @@ pub use render::{
 pub use glifo::Glyph;
 #[cfg(feature = "text")]
 pub use text::{CpuGlyphRunBackend, GlyphRunBuilder};
+pub use vello_common::blurred_rounded_rect::CornerRadii;
 pub use vello_common::fearless_simd::Level;
 pub use vello_common::mask::Mask;
 pub use vello_common::paint::{Image, ImageSource, Paint, PaintType};

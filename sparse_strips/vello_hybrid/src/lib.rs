@@ -107,6 +107,7 @@ pub use scene::{LayersConfig, MemorySettings, RenderSettings, Scene};
 pub use text::{GlyphRunBuilder, HybridGlyphRunBackend};
 pub use util::DimensionConstraints;
 pub use vello_common::TextureId;
+pub use vello_common::blurred_rounded_rect::CornerRadii;
 pub use vello_common::geometry::SizeU16;
 pub use vello_common::multi_atlas::{AllocationStrategy, AtlasConfig, AtlasId};
 pub use vello_common::pixmap::Pixmap;
