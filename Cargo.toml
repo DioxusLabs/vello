@@ -101,7 +101,7 @@ bytemuck = { version = "1.25.0", features = ["derive"] }
 skrifa = { version = "0.44.0", default-features = false, features = ["autohint_shaping"] }
 # The version of kurbo used below should be kept in sync
 # with the version of kurbo used by peniko.
-peniko = { version = "0.6.1", default-features = false }
+peniko = { git = "https://github.com/DioxusLabs/peniko", rev = "44095211acdfb4024ecf0a4c620cd91e82440df3", default-features = false }
 # FIXME: This can be removed once peniko supports the schemars feature.
 kurbo = { version = "0.13.1", default-features = false }
 futures-intrusive = "0.5.0"

@@ -2,10 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::fine::PosExt;
-use crate::fine::common::image::{ImagePainterData, extend, fract_floor, sample};
+use crate::fine::common::image::{
+    ImagePainterData, apply_mask, extend, fract_floor, in_bounds_mask, sample,
+};
 use crate::fine::macros::u8x16_painter;
 use vello_common::encode::EncodedImage;
-use vello_common::fearless_simd::{Simd, SimdBase, SimdFloat, f32x4, u8x16, u16x16};
+use vello_common::fearless_simd::{Simd, SimdBase, SimdFloat, f32x4, mask32x4, u8x16, u16x16};
 use vello_common::pixmap::Pixmap;
 use vello_common::simd::element_wise_splat;
 use vello_common::util::{Div255Ext, f32_to_u8};
@@ -70,6 +72,24 @@ impl<S: Simd> Iterator for BilinearImagePainter<'_, S> {
             )
         };
 
+        let mask_x = |x_pos: f32x4<S>| {
+            in_bounds_mask(
+                self.simd,
+                x_pos,
+                self.data.image.sampler.x_extend,
+                self.data.width,
+            )
+        };
+
+        let mask_y = |y_pos: f32x4<S>| {
+            in_bounds_mask(
+                self.simd,
+                y_pos,
+                self.data.image.sampler.y_extend,
+                self.data.height,
+            )
+        };
+
         let fx = f32_to_u8(element_wise_splat(
             self.simd,
             fract_floor(x_positions + 0.5).mul_add(255.0, 0.5),
@@ -84,23 +104,36 @@ impl<S: Simd> Iterator for BilinearImagePainter<'_, S> {
         let fx_inv = u16x16::splat(self.simd, 255) - fx;
         let fy_inv = u16x16::splat(self.simd, 255) - fy;
 
+        let x_mask1 = mask_x(x_positions - 0.5);
+        let x_mask2 = mask_x(x_positions + 0.5);
+        let y_mask1 = mask_y(y_positions - 0.5);
+        let y_mask2 = mask_y(y_positions + 0.5);
+
         let x_pos1 = extend_x(x_positions - 0.5);
         let x_pos2 = extend_x(x_positions + 0.5);
         let y_pos1 = extend_y(y_positions - 0.5);
         let y_pos2 = extend_y(y_positions + 0.5);
 
+        let masked_sample = |x_pos: f32x4<S>, y_pos: f32x4<S>, x_mask, y_mask| {
+            apply_mask(
+                self.simd,
+                sample(self.simd, &self.data, x_pos, y_pos),
+                self.simd.and_mask32x4(x_mask, y_mask),
+            )
+        };
+
         let p00 = self
             .simd
-            .widen_u8x16(sample(self.simd, &self.data, x_pos1, y_pos1));
+            .widen_u8x16(masked_sample(x_pos1, y_pos1, x_mask1, y_mask1));
         let p10 = self
             .simd
-            .widen_u8x16(sample(self.simd, &self.data, x_pos2, y_pos1));
+            .widen_u8x16(masked_sample(x_pos2, y_pos1, x_mask2, y_mask1));
         let p01 = self
             .simd
-            .widen_u8x16(sample(self.simd, &self.data, x_pos1, y_pos2));
+            .widen_u8x16(masked_sample(x_pos1, y_pos2, x_mask1, y_mask2));
         let p11 = self
             .simd
-            .widen_u8x16(sample(self.simd, &self.data, x_pos2, y_pos2));
+            .widen_u8x16(masked_sample(x_pos2, y_pos2, x_mask2, y_mask2));
 
         let ip1 = (p00 * fx_inv + p10 * fx).div_255();
         let ip2 = (p01 * fx_inv + p11 * fx).div_255();
@@ -126,6 +159,10 @@ pub(crate) struct PlainBilinearImagePainter<'a, S: Simd> {
     y_pos1: f32x4<S>,
     /// Pre-computed y sample positions (bottom row for bilinear grid)
     y_pos2: f32x4<S>,
+    /// Pre-computed in-bounds mask for the top row
+    y_mask1: mask32x4<S>,
+    /// Pre-computed in-bounds mask for the bottom row
+    y_mask2: mask32x4<S>,
     /// Pre-computed y interpolation weight
     fy: u16x16<S>,
     /// Pre-computed inverse y interpolation weight
@@ -156,6 +193,12 @@ impl<'a, S: Simd> PlainBilinearImagePainter<'a, S> {
                     data.x_advances.1,
                     data.y_advances.1,
                 );
+
+                // Pre-compute y in-bounds masks
+                let y_mask1 =
+                    in_bounds_mask(simd, y_positions - 0.5, image.sampler.y_extend, data.height);
+                let y_mask2 =
+                    in_bounds_mask(simd, y_positions + 0.5, image.sampler.y_extend, data.height);
 
                 // Pre-compute y extend positions
                 let y_pos1 = extend(
@@ -192,6 +235,8 @@ impl<'a, S: Simd> PlainBilinearImagePainter<'a, S> {
                     data,
                     y_pos1,
                     y_pos2,
+                    y_mask1,
+                    y_mask2,
                     fy,
                     fy_inv,
                     cur_x_pos,
@@ -212,6 +257,18 @@ impl<S: Simd> Iterator for PlainBilinearImagePainter<'_, S> {
         let x_plus_half = self.cur_x_pos + 0.5;
 
         // Only x needs to be extended per-iteration
+        let x_mask1 = in_bounds_mask(
+            self.simd,
+            x_minus_half,
+            self.data.image.sampler.x_extend,
+            self.data.width,
+        );
+        let x_mask2 = in_bounds_mask(
+            self.simd,
+            x_plus_half,
+            self.data.image.sampler.x_extend,
+            self.data.width,
+        );
         let x_pos1 = extend(
             self.simd,
             x_minus_half,
@@ -235,19 +292,27 @@ impl<S: Simd> Iterator for PlainBilinearImagePainter<'_, S> {
         let fx = self.simd.widen_u8x16(fx);
         let fx_inv = u16x16::splat(self.simd, 255) - fx;
 
+        let masked_sample = |x_pos: f32x4<S>, y_pos: f32x4<S>, x_mask, y_mask| {
+            apply_mask(
+                self.simd,
+                sample(self.simd, &self.data, x_pos, y_pos),
+                self.simd.and_mask32x4(x_mask, y_mask),
+            )
+        };
+
         // Sample the 4 corners using pre-computed y positions
         let p00 = self
             .simd
-            .widen_u8x16(sample(self.simd, &self.data, x_pos1, self.y_pos1));
+            .widen_u8x16(masked_sample(x_pos1, self.y_pos1, x_mask1, self.y_mask1));
         let p10 = self
             .simd
-            .widen_u8x16(sample(self.simd, &self.data, x_pos2, self.y_pos1));
+            .widen_u8x16(masked_sample(x_pos2, self.y_pos1, x_mask2, self.y_mask1));
         let p01 = self
             .simd
-            .widen_u8x16(sample(self.simd, &self.data, x_pos1, self.y_pos2));
+            .widen_u8x16(masked_sample(x_pos1, self.y_pos2, x_mask1, self.y_mask2));
         let p11 = self
             .simd
-            .widen_u8x16(sample(self.simd, &self.data, x_pos2, self.y_pos2));
+            .widen_u8x16(masked_sample(x_pos2, self.y_pos2, x_mask2, self.y_mask2));
 
         // Bilinear interpolation
         let ip1 = (p00 * fx_inv + p10 * fx).div_255();

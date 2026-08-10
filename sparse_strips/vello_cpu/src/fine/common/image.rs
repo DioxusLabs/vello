@@ -5,7 +5,9 @@ use crate::fine::macros::{f32x16_painter, u8x16_painter};
 use crate::fine::{PosExt, Splat4thExt, u8_to_f32};
 use crate::kurbo::Point;
 use vello_common::encode::EncodedImage;
-use vello_common::fearless_simd::{Bytes, Simd, SimdBase, SimdFloat, f32x4, f32x16, u8x16, u32x4};
+use vello_common::fearless_simd::{
+    Bytes, Simd, SimdBase, SimdFloat, f32x4, f32x16, mask32x4, u8x16, u32x4,
+};
 use vello_common::pixmap::Pixmap;
 use vello_common::simd::element_wise_splat;
 
@@ -14,6 +16,7 @@ use vello_common::simd::element_wise_splat;
 pub(crate) struct PlainNNImagePainter<'a, S: Simd> {
     data: ImagePainterData<'a, S>,
     y_positions: f32x4<S>,
+    y_mask: mask32x4<S>,
     cur_x_pos: f32x4<S>,
     advance: f32,
     simd: S,
@@ -32,14 +35,17 @@ impl<'a, S: Simd> PlainNNImagePainter<'a, S> {
         simd.vectorize(
             #[inline(always)]
             || {
+                let raw_y_positions = f32x4::splat_pos(
+                    simd,
+                    data.cur_pos.y as f32,
+                    data.x_advances.1,
+                    data.y_advances.1,
+                );
+                let y_mask =
+                    in_bounds_mask(simd, raw_y_positions, image.sampler.y_extend, data.height);
                 let y_positions = extend(
                     simd,
-                    f32x4::splat_pos(
-                        simd,
-                        data.cur_pos.y as f32,
-                        data.x_advances.1,
-                        data.y_advances.1,
-                    ),
+                    raw_y_positions,
                     image.sampler.y_extend,
                     data.height,
                     data.height_inv,
@@ -56,6 +62,7 @@ impl<'a, S: Simd> PlainNNImagePainter<'a, S> {
                     data,
                     advance: image.x_advance.x as f32,
                     y_positions,
+                    y_mask,
                     cur_x_pos,
                     simd,
                 }
@@ -69,6 +76,12 @@ impl<S: Simd> Iterator for PlainNNImagePainter<'_, S> {
 
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
+        let x_mask = in_bounds_mask(
+            self.simd,
+            self.cur_x_pos,
+            self.data.image.sampler.x_extend,
+            self.data.width,
+        );
         let x_pos = extend(
             self.simd,
             self.cur_x_pos,
@@ -78,6 +91,11 @@ impl<S: Simd> Iterator for PlainNNImagePainter<'_, S> {
         );
 
         let samples = sample(self.simd, &self.data, x_pos, self.y_positions);
+        let samples = apply_mask(
+            self.simd,
+            samples,
+            self.simd.and_mask32x4(x_mask, self.y_mask),
+        );
 
         self.cur_x_pos += self.advance;
 
@@ -113,14 +131,35 @@ impl<S: Simd> Iterator for NNImagePainter<'_, S> {
 
     #[inline(always)]
     fn next(&mut self) -> Option<Self::Item> {
+        let raw_x_positions = f32x4::splat_pos(
+            self.simd,
+            self.data.cur_pos.x as f32,
+            self.data.x_advances.0,
+            self.data.y_advances.0,
+        );
+        let raw_y_positions = f32x4::splat_pos(
+            self.simd,
+            self.data.cur_pos.y as f32,
+            self.data.x_advances.1,
+            self.data.y_advances.1,
+        );
+
+        let x_mask = in_bounds_mask(
+            self.simd,
+            raw_x_positions,
+            self.data.image.sampler.x_extend,
+            self.data.width,
+        );
+        let y_mask = in_bounds_mask(
+            self.simd,
+            raw_y_positions,
+            self.data.image.sampler.y_extend,
+            self.data.height,
+        );
+
         let x_positions = extend(
             self.simd,
-            f32x4::splat_pos(
-                self.simd,
-                self.data.cur_pos.x as f32,
-                self.data.x_advances.0,
-                self.data.y_advances.0,
-            ),
+            raw_x_positions,
             self.data.image.sampler.x_extend,
             self.data.width,
             self.data.width_inv,
@@ -128,18 +167,14 @@ impl<S: Simd> Iterator for NNImagePainter<'_, S> {
 
         let y_positions = extend(
             self.simd,
-            f32x4::splat_pos(
-                self.simd,
-                self.data.cur_pos.y as f32,
-                self.data.x_advances.1,
-                self.data.y_advances.1,
-            ),
+            raw_y_positions,
             self.data.image.sampler.y_extend,
             self.data.height,
             self.data.height_inv,
         );
 
         let samples = sample(self.simd, &self.data, x_positions, y_positions);
+        let samples = apply_mask(self.simd, samples, self.simd.and_mask32x4(x_mask, y_mask));
 
         self.data.cur_pos += self.data.image.x_advance;
 
@@ -221,7 +256,7 @@ impl<S: Simd, const QUALITY: u8> Iterator for FilteredImagePainter<'_, S, QUALIT
                 extend(
                     self.simd,
                     x_positions + $offsets[$idx],
-                    self.data.image.sampler.y_extend,
+                    self.data.image.sampler.x_extend,
                     self.data.width,
                     self.data.width_inv,
                 )
@@ -240,6 +275,34 @@ impl<S: Simd, const QUALITY: u8> Iterator for FilteredImagePainter<'_, S, QUALIT
             };
         }
 
+        macro_rules! mask_x {
+            ($idx:expr,$offsets:expr) => {
+                mask_to_weights(
+                    self.simd,
+                    in_bounds_mask(
+                        self.simd,
+                        x_positions + $offsets[$idx],
+                        self.data.image.sampler.x_extend,
+                        self.data.width,
+                    ),
+                )
+            };
+        }
+
+        macro_rules! mask_y {
+            ($idx:expr,$offsets:expr) => {
+                mask_to_weights(
+                    self.simd,
+                    in_bounds_mask(
+                        self.simd,
+                        y_positions + $offsets[$idx],
+                        self.data.image.sampler.y_extend,
+                        self.data.height,
+                    ),
+                )
+            };
+        }
+
         match QUALITY {
             // medium quality: bilinear
             1 => {
@@ -253,6 +316,9 @@ impl<S: Simd, const QUALITY: u8> Iterator for FilteredImagePainter<'_, S, QUALIT
 
                 const OFFSETS: [f32; 2] = [-0.5, 0.5];
 
+                let x_masks = [mask_x!(0, OFFSETS), mask_x!(1, OFFSETS)];
+                let y_masks = [mask_y!(0, OFFSETS), mask_y!(1, OFFSETS)];
+
                 let x_positions = [extend_x!(0, OFFSETS), extend_x!(1, OFFSETS)];
 
                 let y_positions = [extend_y!(0, OFFSETS), extend_y!(1, OFFSETS)];
@@ -264,7 +330,10 @@ impl<S: Simd, const QUALITY: u8> Iterator for FilteredImagePainter<'_, S, QUALIT
                     for y_idx in 0..2 {
                         let y_positions = y_positions[y_idx];
                         let color_sample = sample(x_positions, y_positions);
-                        let w = element_wise_splat(self.simd, cx[x_idx] * cy[y_idx]);
+                        let w = element_wise_splat(
+                            self.simd,
+                            cx[x_idx] * cy[y_idx] * x_masks[x_idx] * y_masks[y_idx],
+                        );
 
                         interpolated_color = w.mul_add(color_sample, interpolated_color);
                     }
@@ -279,6 +348,19 @@ impl<S: Simd, const QUALITY: u8> Iterator for FilteredImagePainter<'_, S, QUALIT
                 let cy = weights(self.simd, y_fract);
 
                 const OFFSETS: [f32; 4] = [-1.5, -0.5, 0.5, 1.5];
+
+                let x_masks = [
+                    mask_x!(0, OFFSETS),
+                    mask_x!(1, OFFSETS),
+                    mask_x!(2, OFFSETS),
+                    mask_x!(3, OFFSETS),
+                ];
+                let y_masks = [
+                    mask_y!(0, OFFSETS),
+                    mask_y!(1, OFFSETS),
+                    mask_y!(2, OFFSETS),
+                    mask_y!(3, OFFSETS),
+                ];
 
                 let x_positions = [
                     extend_x!(0, OFFSETS),
@@ -304,7 +386,10 @@ impl<S: Simd, const QUALITY: u8> Iterator for FilteredImagePainter<'_, S, QUALIT
                         let y_positions = y_positions[y_idx];
 
                         let color_sample = sample(x_positions, y_positions);
-                        let w = element_wise_splat(self.simd, cx[x_idx] * cy[y_idx]);
+                        let w = element_wise_splat(
+                            self.simd,
+                            cx[x_idx] * cy[y_idx] * x_masks[x_idx] * y_masks[y_idx],
+                        );
 
                         interpolated_color = w.mul_add(color_sample, interpolated_color);
                     }
@@ -439,7 +524,12 @@ pub(crate) fn extend<S: Simd>(
         // Note that max should be exclusive, so subtract one to enforce that.
         // Since the maximum image dimensions we support is u16::MAX, subtracting 1 in f32
         // is enough to ensure that all numbers are subtracted correctly.
-        crate::peniko::Extend::Pad => val.min(max - 1.0).max(f32x4::splat(simd, 0.0)),
+        //
+        // For `None`, out-of-bounds positions are clamped like `Pad` so that they can be
+        // sampled safely; the resulting samples are zeroed via `in_bounds_mask`.
+        crate::peniko::Extend::Pad | crate::peniko::Extend::None => {
+            val.min(max - 1.0).max(f32x4::splat(simd, 0.0))
+        }
         crate::peniko::Extend::Repeat => {
             // floor := (val * inv_max).floor() * max is the nearest multiple of `max` below val.
             max.mul_add(-(val * inv_max).floor(), val)
@@ -466,6 +556,39 @@ pub(crate) fn extend<S: Simd>(
                 .min(max - 1.0)
         }
     }
+}
+
+/// A mask that is all-ones for lanes where `val` is inside `[0, max)` and all-zeroes
+/// otherwise. For extend modes other than [`None`](crate::peniko::Extend::None), all
+/// positions are considered in-bounds.
+#[inline(always)]
+pub(crate) fn in_bounds_mask<S: Simd>(
+    simd: S,
+    val: f32x4<S>,
+    extend: crate::peniko::Extend,
+    max: f32x4<S>,
+) -> mask32x4<S> {
+    match extend {
+        crate::peniko::Extend::None => simd.and_mask32x4(
+            simd.simd_ge_f32x4(val, f32x4::splat(simd, 0.0)),
+            simd.simd_lt_f32x4(val, max),
+        ),
+        _ => mask32x4::splat(simd, -1),
+    }
+}
+
+/// Converts an in-bounds mask to per-lane multiplicative weights of `1.0`/`0.0`.
+#[inline(always)]
+pub(crate) fn mask_to_weights<S: Simd>(simd: S, mask: mask32x4<S>) -> f32x4<S> {
+    simd.select_f32x4(mask, f32x4::splat(simd, 1.0), f32x4::splat(simd, 0.0))
+}
+
+/// Zeroes out the pixels of `samples` for lanes that are masked out.
+#[inline(always)]
+pub(crate) fn apply_mask<S: Simd>(simd: S, samples: u8x16<S>, mask: mask32x4<S>) -> u8x16<S> {
+    let as_u32 = u32x4::from_bytes(samples.to_bytes());
+    simd.select_u32x4(mask, as_u32, u32x4::splat(simd, 0))
+        .to_bytes()
 }
 
 /// Calculate the weights for a single fractional value.

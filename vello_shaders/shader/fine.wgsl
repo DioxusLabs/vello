@@ -864,6 +864,8 @@ fn maybe_premul_alpha(pixel: vec4f, alpha_type: u32) -> vec4f {
 const EXTEND_PAD: u32 = 0u;
 const EXTEND_REPEAT: u32 = 1u;
 const EXTEND_REFLECT: u32 = 2u;
+// Does not extend the image: samples outside the image are transparent.
+const EXTEND_NONE: u32 = 3u;
 fn extend_mode_normalized(t: f32, mode: u32) -> f32 {
     switch mode {
         case EXTEND_PAD: {
@@ -880,7 +882,9 @@ fn extend_mode_normalized(t: f32, mode: u32) -> f32 {
 
 fn extend_mode(t: f32, mode: u32, max: f32) -> f32 {
     switch mode {
-        case EXTEND_PAD: {
+        // For `EXTEND_NONE`, out-of-bounds positions are clamped like `EXTEND_PAD` so
+        // that they can be sampled safely; the resulting samples are zeroed separately.
+        case EXTEND_PAD, EXTEND_NONE: {
             return clamp(t, 0.0, max);
         }
         case EXTEND_REPEAT: {
@@ -890,6 +894,21 @@ fn extend_mode(t: f32, mode: u32, max: f32) -> f32 {
             return extend_mode_normalized(t / max, mode) * max;
         }
     }
+}
+
+// Like `extend_mode`, but leaves positions unmodified for `EXTEND_NONE` so that
+// filtered sampling can weight out-of-bounds taps by zero.
+fn extend_mode_unclamped(t: f32, mode: u32, max: f32) -> f32 {
+    if mode == EXTEND_NONE {
+        return t;
+    }
+    return extend_mode(t, mode, max);
+}
+
+// The weight of a sample tap at position `t`: zero when the position is outside
+// `[lo, hi)` and the extend mode is `EXTEND_NONE`, one otherwise.
+fn tap_weight(t: f32, mode: u32, lo: f32, hi: f32) -> f32 {
+    return select(1.0, f32(t >= lo && t < hi), mode == EXTEND_NONE);
 }
 
 // Cubic resampler logic borrowed from Skia (same as CPU cubic_resampler function)
@@ -952,32 +971,49 @@ fn bicubic_sample(
     atlas_offset: vec2<f32>,
     atlas_max: vec2<f32>,
     alpha_type: u32,
+    extend_modes: vec2<u32>,
+    extents: vec2<f32>,
 ) -> vec4<f32> {
+    let atlas_end = atlas_offset + extents;
     let frac_coords = fract(coords + vec2(0.5));
     // Get cubic weights for x and y directions
     let cx = cubic_weights(frac_coords.x);
     let cy = cubic_weights(frac_coords.y);
 
+    // Per-tap weights that zero out-of-bounds taps for `EXTEND_NONE`.
+    let wx = vec4<f32>(
+        tap_weight(coords.x - 1.5, extend_modes.x, atlas_offset.x, atlas_end.x),
+        tap_weight(coords.x - 0.5, extend_modes.x, atlas_offset.x, atlas_end.x),
+        tap_weight(coords.x + 0.5, extend_modes.x, atlas_offset.x, atlas_end.x),
+        tap_weight(coords.x + 1.5, extend_modes.x, atlas_offset.x, atlas_end.x),
+    );
+    let wy = vec4<f32>(
+        tap_weight(coords.y - 1.5, extend_modes.y, atlas_offset.y, atlas_end.y),
+        tap_weight(coords.y - 0.5, extend_modes.y, atlas_offset.y, atlas_end.y),
+        tap_weight(coords.y + 0.5, extend_modes.y, atlas_offset.y, atlas_end.y),
+        tap_weight(coords.y + 1.5, extend_modes.y, atlas_offset.y, atlas_end.y),
+    );
+
     // Sample 4x4 grid around coords
-    let s00 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-1.5, -1.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s10 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-0.5, -1.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s20 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(0.5, -1.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s30 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(1.5, -1.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s00 = wx.x * wy.x * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-1.5, -1.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s10 = wx.y * wy.x * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-0.5, -1.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s20 = wx.z * wy.x * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(0.5, -1.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s30 = wx.w * wy.x * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(1.5, -1.5), atlas_offset, atlas_max)), 0), alpha_type);
 
-    let s01 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-1.5, -0.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s11 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-0.5, -0.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s21 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(0.5, -0.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s31 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(1.5, -0.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s01 = wx.x * wy.y * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-1.5, -0.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s11 = wx.y * wy.y * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-0.5, -0.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s21 = wx.z * wy.y * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(0.5, -0.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s31 = wx.w * wy.y * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(1.5, -0.5), atlas_offset, atlas_max)), 0), alpha_type);
 
-    let s02 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-1.5, 0.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s12 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-0.5, 0.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s22 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(0.5, 0.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s32 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(1.5, 0.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s02 = wx.x * wy.z * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-1.5, 0.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s12 = wx.y * wy.z * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-0.5, 0.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s22 = wx.z * wy.z * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(0.5, 0.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s32 = wx.w * wy.z * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(1.5, 0.5), atlas_offset, atlas_max)), 0), alpha_type);
 
-    let s03 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-1.5, 1.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s13 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-0.5, 1.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s23 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(0.5, 1.5), atlas_offset, atlas_max)), 0), alpha_type);
-    let s33 = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(1.5, 1.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s03 = wx.x * wy.w * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-1.5, 1.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s13 = wx.y * wy.w * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(-0.5, 1.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s23 = wx.z * wy.w * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(0.5, 1.5), atlas_offset, atlas_max)), 0), alpha_type);
+    let s33 = wx.w * wy.w * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(clamp(coords + vec2(1.5, 1.5), atlas_offset, atlas_max)), 0), alpha_type);
 
     // Interpolate in x direction for each row
     let row0 = cx.x * s00 + cx.y * s10 + cx.z * s20 + cx.w * s30;
@@ -1322,14 +1358,18 @@ fn main(
                             if area[i] != 0.0 {
                                 // Use pixel centers (+0.5) rather than pixel corners for correct sampling
                                 let my_xy = vec2(xy.x + f32(i) + 0.5, xy.y + 0.5);
-                                var atlas_uv = image.matrx.xy * my_xy.x + image.matrx.zw * my_xy.y + image.xlat;
+                                let local_uv = image.matrx.xy * my_xy.x + image.matrx.zw * my_xy.y + image.xlat;
+                                var atlas_uv = local_uv;
                                 atlas_uv.x = extend_mode(atlas_uv.x, image.x_extend_mode, image.extents.x);
                                 atlas_uv.y = extend_mode(atlas_uv.y, image.y_extend_mode, image.extents.y);
                                 atlas_uv = atlas_uv + image.atlas_offset;
                                 // TODO: If the image couldn't be added to the atlas (i.e. was too big), this isn't robust
                                 let atlas_uv_clamped = clamp(atlas_uv, image.atlas_offset, atlas_max);
+                                // Zero out samples outside the image for `EXTEND_NONE`.
+                                let decal_weight = tap_weight(local_uv.x, image.x_extend_mode, 0.0, image.extents.x)
+                                    * tap_weight(local_uv.y, image.y_extend_mode, 0.0, image.extents.y);
                                 // Nearest neighbor sampling
-                                let fg_rgba = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(atlas_uv_clamped), 0), image.alpha_type);
+                                let fg_rgba = decal_weight * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(atlas_uv_clamped), 0), image.alpha_type);
                                 let fg_i = pixel_format(fg_rgba * area[i] * image.alpha, image.format);
                                 rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
                             }
@@ -1342,19 +1382,27 @@ fn main(
                                 // Use pixel centers (+0.5) rather than pixel corners for correct sampling
                                 let my_xy = vec2(xy.x + f32(i) + 0.5, xy.y + 0.5);
                                 var atlas_uv = image.matrx.xy * my_xy.x + image.matrx.zw * my_xy.y + image.xlat;
-                                atlas_uv.x = extend_mode(atlas_uv.x, image.x_extend_mode, image.extents.x);
-                                atlas_uv.y = extend_mode(atlas_uv.y, image.y_extend_mode, image.extents.y);
+                                // Keep `EXTEND_NONE` axes unclamped so that out-of-bounds
+                                // taps can be weighted by zero, fading the image edge.
+                                atlas_uv.x = extend_mode_unclamped(atlas_uv.x, image.x_extend_mode, image.extents.x);
+                                atlas_uv.y = extend_mode_unclamped(atlas_uv.y, image.y_extend_mode, image.extents.y);
                                 atlas_uv = atlas_uv + image.atlas_offset - vec2(0.5);
+                                let atlas_end = image.atlas_offset + image.extents;
+                                let uv0 = floor(atlas_uv);
+                                let uv1 = uv0 + vec2(1.0);
+                                // Per-tap weights that zero out-of-bounds taps for `EXTEND_NONE`.
+                                let wx0 = tap_weight(uv0.x, image.x_extend_mode, image.atlas_offset.x, atlas_end.x);
+                                let wx1 = tap_weight(uv1.x, image.x_extend_mode, image.atlas_offset.x, atlas_end.x);
+                                let wy0 = tap_weight(uv0.y, image.y_extend_mode, image.atlas_offset.y, atlas_end.y);
+                                let wy1 = tap_weight(uv1.y, image.y_extend_mode, image.atlas_offset.y, atlas_end.y);
                                 // TODO: If the image couldn't be added to the atlas (i.e. was too big), this isn't robust
-                                let atlas_uv_clamped = clamp(atlas_uv, image.atlas_offset, atlas_max);
-                                // We know that the floor and ceil are within the atlas area because atlas_max and
-                                // atlas_offset are integers
-                                let uv_quad = vec4(floor(atlas_uv_clamped), ceil(atlas_uv_clamped));
+                                let cuv0 = clamp(uv0, image.atlas_offset, atlas_max);
+                                let cuv1 = clamp(uv1, image.atlas_offset, atlas_max);
                                 let uv_frac = fract(atlas_uv);
-                                let a = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(uv_quad.xy), 0), image.alpha_type);
-                                let b = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(uv_quad.xw), 0), image.alpha_type);
-                                let c = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(uv_quad.zy), 0), image.alpha_type);
-                                let d = maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(uv_quad.zw), 0), image.alpha_type);
+                                let a = wx0 * wy0 * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(cuv0), 0), image.alpha_type);
+                                let b = wx0 * wy1 * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(vec2(cuv0.x, cuv1.y)), 0), image.alpha_type);
+                                let c = wx1 * wy0 * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(vec2(cuv1.x, cuv0.y)), 0), image.alpha_type);
+                                let d = wx1 * wy1 * maybe_premul_alpha(textureLoad(image_atlas, vec2<i32>(cuv1), 0), image.alpha_type);
                                 // Bilinear sampling
                                 let fg_rgba = mix(mix(a, b, uv_frac.y), mix(c, d, uv_frac.y), uv_frac.x);
                                 let fg_i = pixel_format(fg_rgba * area[i] * image.alpha, image.format);
@@ -1368,10 +1416,13 @@ fn main(
                                 // Use pixel centers (+0.5) rather than pixel corners for correct sampling
                                 let my_xy = vec2(xy.x + f32(i) + 0.5, xy.y + 0.5);
                                 var atlas_uv = image.matrx.xy * my_xy.x + image.matrx.zw * my_xy.y + image.xlat;
-                                atlas_uv.x = extend_mode(atlas_uv.x, image.x_extend_mode, image.extents.x);
-                                atlas_uv.y = extend_mode(atlas_uv.y, image.y_extend_mode, image.extents.y);
+                                // Keep `EXTEND_NONE` axes unclamped so that out-of-bounds
+                                // taps can be weighted by zero, fading the image edge.
+                                atlas_uv.x = extend_mode_unclamped(atlas_uv.x, image.x_extend_mode, image.extents.x);
+                                atlas_uv.y = extend_mode_unclamped(atlas_uv.y, image.y_extend_mode, image.extents.y);
                                 atlas_uv = atlas_uv + image.atlas_offset;
-                                let fg_rgba = bicubic_sample(atlas_uv, image.atlas_offset, atlas_max, image.alpha_type);
+                                let extend_modes = vec2(image.x_extend_mode, image.y_extend_mode);
+                                let fg_rgba = bicubic_sample(atlas_uv, image.atlas_offset, atlas_max, image.alpha_type, extend_modes, image.extents);
                                 let fg_i = pixel_format(fg_rgba * area[i] * image.alpha, image.format);
                                 rgba[i] = rgba[i] * (1.0 - fg_i.a) + fg_i;
                             }

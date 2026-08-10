@@ -791,7 +791,8 @@ impl Renderer {
     ) -> GpuEncodedPaint {
         let transform = gradient.transform.as_coeffs().map(|x| x as f32);
         let extend_mode = match gradient.extend {
-            peniko::Extend::Pad => 0,
+            // `None` is currently only supported for images and falls back to `Pad` for gradients.
+            peniko::Extend::Pad | peniko::Extend::None => 0,
             peniko::Extend::Repeat => 1,
             peniko::Extend::Reflect => 2,
         };

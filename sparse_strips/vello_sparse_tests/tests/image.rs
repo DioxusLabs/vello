@@ -89,6 +89,48 @@ fn image_pad_x_pad_y(ctx: &mut impl Renderer) {
     repeat(ctx, Extend::Pad, Extend::Pad);
 }
 
+#[vello_test]
+fn image_none_x_none_y(ctx: &mut impl Renderer) {
+    repeat(ctx, Extend::None, Extend::None);
+}
+
+#[vello_test]
+fn image_none_x_repeat_y(ctx: &mut impl Renderer) {
+    repeat(ctx, Extend::None, Extend::Repeat);
+}
+
+#[vello_test]
+fn image_repeat_x_none_y(ctx: &mut impl Renderer) {
+    repeat(ctx, Extend::Repeat, Extend::None);
+}
+
+fn repeat_quality(ctx: &mut impl Renderer, quality: ImageQuality) {
+    let rect = Rect::new(10.0, 10.0, 90.0, 90.0);
+    let image_source = rgb_img_10x10(ctx);
+
+    ctx.set_paint_transform(Affine::translate((45.0, 45.0)));
+    ctx.set_paint(Image {
+        image: image_source,
+        sampler: ImageSampler {
+            x_extend: Extend::None,
+            y_extend: Extend::None,
+            quality,
+            alpha: 1.0,
+        },
+    });
+    ctx.fill_rect(&rect);
+}
+
+#[vello_test]
+fn image_none_x_none_y_bilinear(ctx: &mut impl Renderer) {
+    repeat_quality(ctx, ImageQuality::Medium);
+}
+
+#[vello_test]
+fn image_none_x_none_y_bicubic(ctx: &mut impl Renderer) {
+    repeat_quality(ctx, ImageQuality::High);
+}
+
 fn transform(ctx: &mut impl Renderer, transform: Affine, l: f64, t: f64, r: f64, b: f64) {
     let rect = Rect::new(l, t, r, b);
     let image_source = rgb_img_10x10(ctx);
