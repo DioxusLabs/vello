@@ -635,9 +635,10 @@ mod tests {
         assert_eq!(Extend::Pad as u32, 0);
         assert_eq!(Extend::Repeat as u32, 1);
         assert_eq!(Extend::Reflect as u32, 2);
+        assert_eq!(Extend::None as u32, 3);
         // exhaustive match to catch new variants
         match Extend::Pad {
-            Extend::Pad | Extend::Repeat | Extend::Reflect => {}
+            Extend::Pad | Extend::Repeat | Extend::Reflect | Extend::None => {}
         }
     }
 }

@@ -388,21 +388,41 @@ fn fs_main(
                 extend_mode(local_xy.x + offset, image_extend_modes.x, image_size.x),
                 extend_mode(local_xy.y + offset, image_extend_modes.y, image_size.y)
             );
+            // For filtered sampling, keep `EXTEND_NONE` axes unclamped so that
+            // out-of-bounds taps can be weighted by zero, fading the image edge.
+            let extended_xy_unclamped = vec2<f32>(
+                extend_mode_unclamped(local_xy.x + offset, image_extend_modes.x, image_size.x),
+                extend_mode_unclamped(local_xy.y + offset, image_extend_modes.y, image_size.y)
+            );
 
             // TODO: add a fast path for images where we are using bilinear sampling and want transparent pixels,
             // using GPU-native bilinear sampling
 
             var sample_color: vec4<f32>;
             if image_source_kind == IMAGE_SOURCE_EXTERNAL {
-                let final_xy = image_offset + extended_xy;
-                sample_color = sample_external_image(
-                    image_quality,
-                    final_xy,
-                    image_offset,
-                    image_size,
-                );
+                if image_quality == IMAGE_QUALITY_LOW {
+                    let final_xy = image_offset + extended_xy;
+                    sample_color = sample_external_image(
+                        image_quality,
+                        final_xy,
+                        image_offset,
+                        image_size,
+                        image_extend_modes,
+                    );
+                    sample_color *= tap_weight(local_xy.x + offset, image_extend_modes.x, 0.0, image_size.x)
+                        * tap_weight(local_xy.y + offset, image_extend_modes.y, 0.0, image_size.y);
+                } else {
+                    let final_xy = image_offset + extended_xy_unclamped;
+                    sample_color = sample_external_image(
+                        image_quality,
+                        final_xy,
+                        image_offset,
+                        image_size,
+                        image_extend_modes,
+                    );
+                }
             } else if image_quality == IMAGE_QUALITY_HIGH {
-                let final_xy = image_offset + extended_xy;
+                let final_xy = image_offset + extended_xy_unclamped;
                 sample_color = bicubic_sample(
                     atlas_texture_array,
                     final_xy,
@@ -413,7 +433,7 @@ fn fs_main(
                     image_padding,
                 );
             } else if image_quality == IMAGE_QUALITY_MEDIUM {
-                let final_xy = image_offset + extended_xy - vec2(0.5);
+                let final_xy = image_offset + extended_xy_unclamped - vec2(0.5);
                 sample_color = bilinear_sample(
                     atlas_texture_array,
                     final_xy,
@@ -431,6 +451,8 @@ fn fs_main(
                     i32(image_atlas_index),
                     0,
                 );
+                sample_color *= tap_weight(local_xy.x + offset, image_extend_modes.x, 0.0, image_size.x)
+                    * tap_weight(local_xy.y + offset, image_extend_modes.y, 0.0, image_size.y);
             }
 
             final_color = alpha * select(
@@ -629,9 +651,13 @@ fn unpack_alphas_from_channel(rgba: vec4<u32>, channel_index: u32) -> u32 {
 const EXTEND_PAD: u32 = 0u;
 const EXTEND_REPEAT: u32 = 1u;
 const EXTEND_REFLECT: u32 = 2u;
+// Does not extend the image: samples outside the image are transparent.
+const EXTEND_NONE: u32 = 3u;
 fn extend_mode(t: f32, mode: u32, max: f32) -> f32 {
     switch mode {
-        case EXTEND_PAD: {
+        // For `EXTEND_NONE`, out-of-bounds positions are clamped like `EXTEND_PAD` so
+        // that they can be sampled safely; the resulting samples are zeroed separately.
+        case EXTEND_PAD, EXTEND_NONE: {
             return clamp(t, 0.0, max - 1.0);
         }
         case EXTEND_REPEAT: {
@@ -641,6 +667,21 @@ fn extend_mode(t: f32, mode: u32, max: f32) -> f32 {
             return extend_mode_normalized(t / max, mode) * max;
         }
     }
+}
+
+// Like `extend_mode`, but leaves positions unmodified for `EXTEND_NONE` so that
+// filtered sampling can weight out-of-bounds taps by zero.
+fn extend_mode_unclamped(t: f32, mode: u32, max: f32) -> f32 {
+    if mode == EXTEND_NONE {
+        return t;
+    }
+    return extend_mode(t, mode, max);
+}
+
+// The weight of a sample tap at position `t`: zero when the position is outside
+// `[lo, hi)` and the extend mode is `EXTEND_NONE`, one otherwise.
+fn tap_weight(t: f32, mode: u32, lo: f32, hi: f32) -> f32 {
+    return select(1.0, f32(t >= lo && t < hi), mode == EXTEND_NONE);
 }
 
 fn extend_mode_normalized(t: f32, mode: u32) -> f32 {
@@ -667,17 +708,24 @@ fn bilinear_sample(
     atlas_idx: i32,
     image_offset: vec2<f32>,
     image_size: vec2<f32>,
-    _extend_modes: vec2<u32>,
+    extend_modes: vec2<u32>,
     _image_padding: f32,
 ) -> vec4<f32> {
     let atlas_max = image_offset + image_size - vec2(1.0);
-    let atlas_uv_clamped = clamp(coords, image_offset, atlas_max);
-    let uv_quad = vec4(floor(atlas_uv_clamped), ceil(atlas_uv_clamped));
+    let image_end = image_offset + image_size;
+    let uv0 = floor(coords);
+    let uv1 = uv0 + vec2(1.0);
+    let wx0 = tap_weight(uv0.x, extend_modes.x, image_offset.x, image_end.x);
+    let wx1 = tap_weight(uv1.x, extend_modes.x, image_offset.x, image_end.x);
+    let wy0 = tap_weight(uv0.y, extend_modes.y, image_offset.y, image_end.y);
+    let wy1 = tap_weight(uv1.y, extend_modes.y, image_offset.y, image_end.y);
+    let cuv0 = clamp(uv0, image_offset, atlas_max);
+    let cuv1 = clamp(uv1, image_offset, atlas_max);
     let uv_frac = fract(coords);
-    let a = textureLoad(tex, vec2<i32>(uv_quad.xy), atlas_idx, 0);
-    let b = textureLoad(tex, vec2<i32>(uv_quad.xw), atlas_idx, 0);
-    let c = textureLoad(tex, vec2<i32>(uv_quad.zy), atlas_idx, 0);
-    let d = textureLoad(tex, vec2<i32>(uv_quad.zw), atlas_idx, 0);
+    let a = wx0 * wy0 * textureLoad(tex, vec2<i32>(cuv0), atlas_idx, 0);
+    let b = wx0 * wy1 * textureLoad(tex, vec2<i32>(vec2(cuv0.x, cuv1.y)), atlas_idx, 0);
+    let c = wx1 * wy0 * textureLoad(tex, vec2<i32>(vec2(cuv1.x, cuv0.y)), atlas_idx, 0);
+    let d = wx1 * wy1 * textureLoad(tex, vec2<i32>(cuv1), atlas_idx, 0);
     return mix(mix(a, b, uv_frac.y), mix(c, d, uv_frac.y), uv_frac.x);
 }
 
@@ -686,15 +734,23 @@ fn external_bilinear_sample(
     coords: vec2<f32>,
     image_offset: vec2<f32>,
     image_size: vec2<f32>,
+    extend_modes: vec2<u32>,
 ) -> vec4<f32> {
     let atlas_max = image_offset + image_size - vec2(1.0);
-    let atlas_uv_clamped = clamp(coords, image_offset, atlas_max);
-    let uv_quad = vec4(floor(atlas_uv_clamped), ceil(atlas_uv_clamped));
+    let image_end = image_offset + image_size;
+    let uv0 = floor(coords);
+    let uv1 = uv0 + vec2(1.0);
+    let wx0 = tap_weight(uv0.x, extend_modes.x, image_offset.x, image_end.x);
+    let wx1 = tap_weight(uv1.x, extend_modes.x, image_offset.x, image_end.x);
+    let wy0 = tap_weight(uv0.y, extend_modes.y, image_offset.y, image_end.y);
+    let wy1 = tap_weight(uv1.y, extend_modes.y, image_offset.y, image_end.y);
+    let cuv0 = clamp(uv0, image_offset, atlas_max);
+    let cuv1 = clamp(uv1, image_offset, atlas_max);
     let uv_frac = fract(coords);
-    let a = textureLoad(external_texture, vec2<i32>(uv_quad.xy), 0);
-    let b = textureLoad(external_texture, vec2<i32>(uv_quad.xw), 0);
-    let c = textureLoad(external_texture, vec2<i32>(uv_quad.zy), 0);
-    let d = textureLoad(external_texture, vec2<i32>(uv_quad.zw), 0);
+    let a = wx0 * wy0 * textureLoad(external_texture, vec2<i32>(cuv0), 0);
+    let b = wx0 * wy1 * textureLoad(external_texture, vec2<i32>(vec2(cuv0.x, cuv1.y)), 0);
+    let c = wx1 * wy0 * textureLoad(external_texture, vec2<i32>(vec2(cuv1.x, cuv0.y)), 0);
+    let d = wx1 * wy1 * textureLoad(external_texture, vec2<i32>(cuv1), 0);
     return mix(mix(a, b, uv_frac.y), mix(c, d, uv_frac.y), uv_frac.x);
 }
 
@@ -710,35 +766,50 @@ fn bicubic_sample(
     atlas_idx: i32,
     image_offset: vec2<f32>,
     image_size: vec2<f32>,
-    _extend_modes: vec2<u32>,
+    extend_modes: vec2<u32>,
     _image_padding: f32,
 ) -> vec4<f32> {
      let atlas_max = image_offset + image_size - vec2(1.0);
+     let image_end = image_offset + image_size;
      let frac_coords = fract(coords + 0.5);
      // Get cubic weights for x and y directions
      let cx = cubic_weights(frac_coords.x);
      let cy = cubic_weights(frac_coords.y);
-     
+
+     // Per-tap weights that zero out-of-bounds taps for `EXTEND_NONE`.
+     let wx = vec4<f32>(
+         tap_weight(coords.x - 1.5, extend_modes.x, image_offset.x, image_end.x),
+         tap_weight(coords.x - 0.5, extend_modes.x, image_offset.x, image_end.x),
+         tap_weight(coords.x + 0.5, extend_modes.x, image_offset.x, image_end.x),
+         tap_weight(coords.x + 1.5, extend_modes.x, image_offset.x, image_end.x),
+     );
+     let wy = vec4<f32>(
+         tap_weight(coords.y - 1.5, extend_modes.y, image_offset.y, image_end.y),
+         tap_weight(coords.y - 0.5, extend_modes.y, image_offset.y, image_end.y),
+         tap_weight(coords.y + 0.5, extend_modes.y, image_offset.y, image_end.y),
+         tap_weight(coords.y + 1.5, extend_modes.y, image_offset.y, image_end.y),
+     );
+
      // Sample 4x4 grid around coords
-     let s00 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(-1.5, -1.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s10 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(-0.5, -1.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s20 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(0.5, -1.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s30 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(1.5, -1.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s00 = wx.x * wy.x * textureLoad(tex, vec2<i32>(clamp(coords + vec2(-1.5, -1.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s10 = wx.y * wy.x * textureLoad(tex, vec2<i32>(clamp(coords + vec2(-0.5, -1.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s20 = wx.z * wy.x * textureLoad(tex, vec2<i32>(clamp(coords + vec2(0.5, -1.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s30 = wx.w * wy.x * textureLoad(tex, vec2<i32>(clamp(coords + vec2(1.5, -1.5), image_offset, atlas_max)), atlas_idx, 0);
      
-     let s01 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(-1.5, -0.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s11 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(-0.5, -0.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s21 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(0.5, -0.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s31 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(1.5, -0.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s01 = wx.x * wy.y * textureLoad(tex, vec2<i32>(clamp(coords + vec2(-1.5, -0.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s11 = wx.y * wy.y * textureLoad(tex, vec2<i32>(clamp(coords + vec2(-0.5, -0.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s21 = wx.z * wy.y * textureLoad(tex, vec2<i32>(clamp(coords + vec2(0.5, -0.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s31 = wx.w * wy.y * textureLoad(tex, vec2<i32>(clamp(coords + vec2(1.5, -0.5), image_offset, atlas_max)), atlas_idx, 0);
      
-     let s02 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(-1.5, 0.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s12 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(-0.5, 0.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s22 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(0.5, 0.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s32 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(1.5, 0.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s02 = wx.x * wy.z * textureLoad(tex, vec2<i32>(clamp(coords + vec2(-1.5, 0.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s12 = wx.y * wy.z * textureLoad(tex, vec2<i32>(clamp(coords + vec2(-0.5, 0.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s22 = wx.z * wy.z * textureLoad(tex, vec2<i32>(clamp(coords + vec2(0.5, 0.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s32 = wx.w * wy.z * textureLoad(tex, vec2<i32>(clamp(coords + vec2(1.5, 0.5), image_offset, atlas_max)), atlas_idx, 0);
      
-     let s03 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(-1.5, 1.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s13 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(-0.5, 1.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s23 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(0.5, 1.5), image_offset, atlas_max)), atlas_idx, 0);
-     let s33 = textureLoad(tex, vec2<i32>(clamp(coords + vec2(1.5, 1.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s03 = wx.x * wy.w * textureLoad(tex, vec2<i32>(clamp(coords + vec2(-1.5, 1.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s13 = wx.y * wy.w * textureLoad(tex, vec2<i32>(clamp(coords + vec2(-0.5, 1.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s23 = wx.z * wy.w * textureLoad(tex, vec2<i32>(clamp(coords + vec2(0.5, 1.5), image_offset, atlas_max)), atlas_idx, 0);
+     let s33 = wx.w * wy.w * textureLoad(tex, vec2<i32>(clamp(coords + vec2(1.5, 1.5), image_offset, atlas_max)), atlas_idx, 0);
     
     // Interpolate in x direction for each row
     let row0 = cx.x * s00 + cx.y * s10 + cx.z * s20 + cx.w * s30;
@@ -758,33 +829,49 @@ fn external_bicubic_sample(
     coords: vec2<f32>,
     image_offset: vec2<f32>,
     image_size: vec2<f32>,
+    extend_modes: vec2<u32>,
 ) -> vec4<f32> {
      let atlas_max = image_offset + image_size - vec2(1.0);
+     let image_end = image_offset + image_size;
      let frac_coords = fract(coords + 0.5);
      // Get cubic weights for x and y directions
      let cx = cubic_weights(frac_coords.x);
      let cy = cubic_weights(frac_coords.y);
 
+     // Per-tap weights that zero out-of-bounds taps for `EXTEND_NONE`.
+     let wx = vec4<f32>(
+         tap_weight(coords.x - 1.5, extend_modes.x, image_offset.x, image_end.x),
+         tap_weight(coords.x - 0.5, extend_modes.x, image_offset.x, image_end.x),
+         tap_weight(coords.x + 0.5, extend_modes.x, image_offset.x, image_end.x),
+         tap_weight(coords.x + 1.5, extend_modes.x, image_offset.x, image_end.x),
+     );
+     let wy = vec4<f32>(
+         tap_weight(coords.y - 1.5, extend_modes.y, image_offset.y, image_end.y),
+         tap_weight(coords.y - 0.5, extend_modes.y, image_offset.y, image_end.y),
+         tap_weight(coords.y + 0.5, extend_modes.y, image_offset.y, image_end.y),
+         tap_weight(coords.y + 1.5, extend_modes.y, image_offset.y, image_end.y),
+     );
+
      // Sample 4x4 grid around coords
-     let s00 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-1.5, -1.5), image_offset, atlas_max)), 0);
-     let s10 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-0.5, -1.5), image_offset, atlas_max)), 0);
-     let s20 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(0.5, -1.5), image_offset, atlas_max)), 0);
-     let s30 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(1.5, -1.5), image_offset, atlas_max)), 0);
+     let s00 = wx.x * wy.x * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-1.5, -1.5), image_offset, atlas_max)), 0);
+     let s10 = wx.y * wy.x * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-0.5, -1.5), image_offset, atlas_max)), 0);
+     let s20 = wx.z * wy.x * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(0.5, -1.5), image_offset, atlas_max)), 0);
+     let s30 = wx.w * wy.x * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(1.5, -1.5), image_offset, atlas_max)), 0);
 
-     let s01 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-1.5, -0.5), image_offset, atlas_max)), 0);
-     let s11 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-0.5, -0.5), image_offset, atlas_max)), 0);
-     let s21 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(0.5, -0.5), image_offset, atlas_max)), 0);
-     let s31 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(1.5, -0.5), image_offset, atlas_max)), 0);
+     let s01 = wx.x * wy.y * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-1.5, -0.5), image_offset, atlas_max)), 0);
+     let s11 = wx.y * wy.y * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-0.5, -0.5), image_offset, atlas_max)), 0);
+     let s21 = wx.z * wy.y * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(0.5, -0.5), image_offset, atlas_max)), 0);
+     let s31 = wx.w * wy.y * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(1.5, -0.5), image_offset, atlas_max)), 0);
 
-     let s02 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-1.5, 0.5), image_offset, atlas_max)), 0);
-     let s12 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-0.5, 0.5), image_offset, atlas_max)), 0);
-     let s22 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(0.5, 0.5), image_offset, atlas_max)), 0);
-     let s32 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(1.5, 0.5), image_offset, atlas_max)), 0);
+     let s02 = wx.x * wy.z * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-1.5, 0.5), image_offset, atlas_max)), 0);
+     let s12 = wx.y * wy.z * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-0.5, 0.5), image_offset, atlas_max)), 0);
+     let s22 = wx.z * wy.z * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(0.5, 0.5), image_offset, atlas_max)), 0);
+     let s32 = wx.w * wy.z * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(1.5, 0.5), image_offset, atlas_max)), 0);
 
-     let s03 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-1.5, 1.5), image_offset, atlas_max)), 0);
-     let s13 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-0.5, 1.5), image_offset, atlas_max)), 0);
-     let s23 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(0.5, 1.5), image_offset, atlas_max)), 0);
-     let s33 = textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(1.5, 1.5), image_offset, atlas_max)), 0);
+     let s03 = wx.x * wy.w * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-1.5, 1.5), image_offset, atlas_max)), 0);
+     let s13 = wx.y * wy.w * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(-0.5, 1.5), image_offset, atlas_max)), 0);
+     let s23 = wx.z * wy.w * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(0.5, 1.5), image_offset, atlas_max)), 0);
+     let s33 = wx.w * wy.w * textureLoad(external_texture, vec2<i32>(clamp(coords + vec2(1.5, 1.5), image_offset, atlas_max)), 0);
 
     // Interpolate in x direction for each row
     let row0 = cx.x * s00 + cx.y * s10 + cx.z * s20 + cx.w * s30;
@@ -803,12 +890,13 @@ fn sample_external_image(
     coords: vec2<f32>,
     image_offset: vec2<f32>,
     image_size: vec2<f32>,
+    extend_modes: vec2<u32>,
 ) -> vec4<f32> {
     if quality == IMAGE_QUALITY_HIGH {
-        return external_bicubic_sample(coords, image_offset, image_size);
+        return external_bicubic_sample(coords, image_offset, image_size, extend_modes);
     }
     if quality == IMAGE_QUALITY_MEDIUM {
-        return external_bilinear_sample(coords - vec2(0.5), image_offset, image_size);
+        return external_bilinear_sample(coords - vec2(0.5), image_offset, image_size, extend_modes);
     }
     return textureLoad(external_texture, vec2<u32>(coords), 0);
 }

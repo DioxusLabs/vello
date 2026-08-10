@@ -3042,8 +3042,7 @@ dependencies = [
 [[package]]
 name = "peniko"
 version = "0.6.1"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "839c8299360d2e998bdb106dc0a6cd71dcc5f4df51df1b620361bf50e283cca6"
+source = "git+https://github.com/DioxusLabs/peniko?rev=44095211acdfb4024ecf0a4c620cd91e82440df3#44095211acdfb4024ecf0a4c620cd91e82440df3"
 dependencies = [
  "bytemuck",
  "color",

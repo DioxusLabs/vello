@@ -516,7 +516,10 @@ impl EncodeExt for Image {
         // even if the source pixels are all opaque.
         let has_opacity = tint.as_ref().is_some_and(|t| t.color.components[3] < 1.0)
             // Not supported yet, but just to future-proof.
-            || sampler.alpha != 1.0;
+            || sampler.alpha != 1.0
+            // `Extend::None` produces transparent samples outside of the image.
+            || sampler.x_extend == Extend::None
+            || sampler.y_extend == Extend::None;
 
         let encoded = EncodedImage {
             may_have_transparency: self.image.may_have_transparency() || has_opacity,

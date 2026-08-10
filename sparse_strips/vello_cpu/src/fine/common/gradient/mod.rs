@@ -230,7 +230,8 @@ fn invalid_f32_mask<S: Simd>(simd: S, indices: u32x4<S>) -> mask32x16<S> {
 #[inline(always)]
 pub(crate) fn apply_extend<S: Simd>(val: f32x8<S>, extend: peniko::Extend) -> f32x8<S> {
     match extend {
-        peniko::Extend::Pad => val.max(0.0).min(1.0),
+        // `None` is currently only supported for images and falls back to `Pad` for gradients.
+        peniko::Extend::Pad | peniko::Extend::None => val.max(0.0).min(1.0),
         peniko::Extend::Repeat => (val - val.floor()).fract(),
         // See <https://github.com/google/skia/blob/220738774f7a0ce4a6c7bd17519a336e5e5dea5b/src/opts/SkRasterPipeline_opts.h#L6472-L6475>
         peniko::Extend::Reflect => ((val - 1.0) - 2.0 * ((val - 1.0) * 0.5).floor() - 1.0)
