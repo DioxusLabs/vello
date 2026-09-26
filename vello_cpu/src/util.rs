@@ -77,6 +77,7 @@ impl<S: Simd> NormalizedMulExt for u8x32<S> {
 pub(crate) trait EncodedImageExt {
     fn has_skew(&self) -> bool;
     fn nearest_neighbor(&self) -> bool;
+    fn integer_translation(&self) -> Option<(i32, i32)>;
 }
 
 impl EncodedImageExt for EncodedImage {
@@ -86,6 +87,35 @@ impl EncodedImageExt for EncodedImage {
 
     fn nearest_neighbor(&self) -> bool {
         self.sampler.quality == ImageQuality::Low
+    }
+
+    /// If the image is sampled with nearest-neighbor filtering and its transform is a
+    /// pure integer translation, return the offset that maps a pixel position to
+    /// the image pixel it samples.
+    #[inline]
+    fn integer_translation(&self) -> Option<(i32, i32)> {
+        // Beyond this magnitude, the `f32` math of the image painters might no longer
+        // be exact, so don't bother.
+        const MAX_OFFSET: f64 = (1 << 20) as f64;
+
+        // Note that we purposefully avoid `f64::round`, since it is a libm call on
+        // some targets and this is called for each command.
+        let to_integer = |v: f64| {
+            if v.is_nan() || v.abs() >= MAX_OFFSET {
+                return None;
+            }
+            let rounded = if v >= 0.0 { v + 0.5 } else { v - 0.5 } as i32;
+            ((v - f64::from(rounded)) as f32)
+                .is_nearly_zero()
+                .then_some(rounded)
+        };
+
+        let [a, b, c, d, e, f] = self.transform.as_coeffs();
+        if !self.nearest_neighbor() || a != 1.0 || b != 0.0 || c != 0.0 || d != 1.0 {
+            return None;
+        }
+
+        Some((to_integer(e)?, to_integer(f)?))
     }
 }
 

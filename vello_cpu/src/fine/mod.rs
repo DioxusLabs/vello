@@ -19,9 +19,11 @@ pub(crate) use crate::fine::common::gradient::calculate_t_vals;
 pub(crate) use crate::fine::common::gradient::linear::SimdLinearKind;
 pub(crate) use crate::fine::common::gradient::radial::SimdRadialKind;
 pub(crate) use crate::fine::common::gradient::sweep::SimdSweepKind;
-use crate::fine::common::image::{FilteredImagePainter, NNImagePainter, PlainNNImagePainter};
+use crate::fine::common::image::{
+    FilteredImagePainter, NNImagePainter, PlainNNImagePainter, pad_alpha_mask,
+};
 use crate::fine::common::rounded_blurred_rect::BlurredRoundedRectFiller;
-use crate::peniko::{BlendMode, ImageQuality};
+use crate::peniko::{BlendMode, Extend, ImageQuality};
 use crate::region::Region;
 use crate::util::EncodedImageExt;
 use alloc::vec;
@@ -29,7 +31,7 @@ use alloc::vec::Vec;
 use core::fmt::Debug;
 use core::iter;
 use vello_common::TargetInit;
-use vello_common::color::AlphaColor;
+use vello_common::color::{AlphaColor, Srgb};
 use vello_common::encode::{
     EncodedBlurredRoundedRectangle, EncodedGradient, EncodedImage, EncodedKind, EncodedPaint,
 };
@@ -40,7 +42,7 @@ use vello_common::fearless_simd::{
 use vello_common::filter_effects::Filter;
 use vello_common::kurbo::Affine;
 use vello_common::mask::Mask;
-use vello_common::paint::{ImageResolver, ImageSource, Paint, PremulColor, Tint};
+use vello_common::paint::{ImageResolver, ImageSource, Paint, PremulColor, Tint, TintMode};
 use vello_common::pixmap::Pixmap;
 use vello_common::simd::Splat4thExt;
 use vello_common::tile::Tile;
@@ -544,6 +546,11 @@ pub struct Fine<S: Simd, T: FineKernel<S>> {
     paint_buf: Vec<T::Numeric>,
     /// Buffer for storing gradient interpolation parameters (t values).
     f32_buf: Vec<f32>,
+    /// Buffer for storing per-pixel coverage of alpha-mask image fills.
+    mask_buf: Vec<u8>,
+    /// The most recently used tint color of an alpha-mask image fill, and its
+    /// premultiplied and converted representation.
+    alpha_mask_color: Option<(AlphaColor<Srgb>, [T::Numeric; 4])>,
     /// The current strip row y-coordinate in scene/filter coordinates.
     row_y: u16,
     /// The origin of the current target we are rendering into.
@@ -564,6 +571,8 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
             buffer_pool: VecPool::new(false),
             paint_buf: Vec::new(),
             f32_buf: Vec::new(),
+            mask_buf: Vec::new(),
+            alpha_mask_color: None,
             row_y: 0,
             origin: (0, 0),
         }
@@ -1088,6 +1097,55 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
                     }
                 };
                 let tint = image.tint.as_ref();
+
+                // Fast path for alpha masks (e.g. glyphs from the glyph atlas) that are
+                // drawn pixel-aligned: Instead of sampling the image, tinting it and then
+                // compositing the result, use the image alpha as additional coverage
+                // for a solid fill with the tint color.
+                if let Some(tint) = tint
+                    && tint.mode == TintMode::AlphaMask
+                    && image.sampler.x_extend == Extend::Pad
+                    && image.sampler.y_extend == Extend::Pad
+                    && pixmap.width() > 0
+                    && pixmap.height() > 0
+                    && let Some((dx, dy)) = image.integer_translation()
+                {
+                    pad_alpha_mask(
+                        simd,
+                        &pixmap,
+                        i32::from(sample_x) + dx,
+                        i32::from(sample_y) + dy,
+                        width,
+                        alphas,
+                        &mut self.mask_buf,
+                    );
+                    let mask = Some(&self.mask_buf[..width * Tile::HEIGHT as usize]);
+                    let color = match self.alpha_mask_color {
+                        Some((cached, color)) if cached == tint.color => color,
+                        _ => {
+                            let color = T::extract_color(PremulColor::from_alpha_color(tint.color));
+                            self.alpha_mask_color = Some((tint.color, color));
+                            color
+                        }
+                    };
+
+                    if default_blend && attrs.mask.is_none() {
+                        T::alpha_composite_solid(simd, dest, color, mask);
+                    } else {
+                        T::blend(
+                            simd,
+                            dest,
+                            x,
+                            y,
+                            iter::repeat(T::Composite::from_color(simd, color)),
+                            attrs.blend_mode,
+                            mask,
+                            attrs.mask.as_ref(),
+                        );
+                    }
+
+                    return;
+                }
 
                 match (image.has_skew(), image.nearest_neighbor()) {
                     (false, false) => {
