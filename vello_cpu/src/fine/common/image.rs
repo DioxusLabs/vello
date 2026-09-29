@@ -4,12 +4,119 @@
 use crate::fine::macros::{f32x16_painter, u8x16_painter};
 use crate::fine::{PosExt, Splat4thExt, u8_to_f32};
 use crate::kurbo::Point;
+use crate::util::scalar::div_255;
+use alloc::vec::Vec;
 use vello_common::encode::EncodedImage;
 use vello_common::fearless_simd::{
     Bytes, Select, Simd, SimdBase, SimdFloat, f32x4, f32x16, u8x16, u32x4,
 };
 use vello_common::pixmap::Pixmap;
 use vello_common::simd::element_wise_splat;
+use vello_common::tile::Tile;
+use vello_common::util::{narrow, normalized_mul_u8};
+
+/// Gather the alpha channel of `pixmap` for a tile-high span of `width` pixel columns
+/// whose top-left pixel samples the image at `(x, y)`, clamping out-of-bounds coordinates
+/// to the image edges (i.e. `Extend::Pad`).
+///
+/// The result is written into the first `width * Tile::HEIGHT` elements of `out` (which
+/// is grown if necessary) in column-major order, like strip alphas. If `alphas` is provided,
+/// each sample is additionally multiplied by the corresponding coverage.
+#[inline(always)]
+pub(crate) fn pad_alpha_mask<S: Simd>(
+    simd: S,
+    pixmap: &Pixmap,
+    x: i32,
+    y: i32,
+    width: usize,
+    alphas: Option<&[u8]>,
+    out: &mut Vec<u8>,
+) {
+    simd.vectorize(
+        #[inline(always)]
+        || {
+            let img_width = i32::from(pixmap.width());
+            let img_height = i32::from(pixmap.height());
+            debug_assert!(img_width > 0 && img_height > 0, "image must not be empty");
+            let data = pixmap.data();
+            let [r0, r1, r2, r3]: [usize; Tile::HEIGHT as usize] = core::array::from_fn(|row| {
+                (y + row as i32).clamp(0, img_height - 1) as usize * img_width as usize
+            });
+
+            let len = width * Tile::HEIGHT as usize;
+            if out.len() < len {
+                out.resize(len, 0);
+            }
+            let out = &mut out[..len];
+
+            if cfg!(target_endian = "little") && x >= 0 && x + width as i32 <= img_width {
+                // Fast path: All columns are in bounds, so we can load 4 consecutive pixels
+                // of each row at once and transpose their alphas into column-major order.
+                const CHUNK: usize = 4 * Tile::HEIGHT as usize;
+                let bytes = pixmap.data_as_u8_slice();
+                let x = x as usize;
+                let load = |row_start: usize, col: usize| {
+                    let start = (row_start + x + col) * 4;
+                    u32x4::from_bytes(u8x16::from_slice(simd, &bytes[start..start + 16]))
+                };
+                let mut chunks = out.chunks_exact_mut(CHUNK);
+
+                for (chunk_idx, chunk) in chunks.by_ref().enumerate() {
+                    let col = chunk_idx * 4;
+                    // With little endian, the alpha channel is stored in the most significant
+                    // byte of each pixel.
+                    let packed = (load(r0, col) >> 24)
+                        | ((load(r1, col) >> 24) << 8)
+                        | ((load(r2, col) >> 24) << 16)
+                        | ((load(r3, col) >> 24) << 24);
+                    let mut packed = packed.to_bytes();
+                    if let Some(alphas) = alphas {
+                        let alphas = u8x16::from_slice(simd, &alphas[col * 4..col * 4 + CHUNK]);
+                        packed = narrow(normalized_mul_u8(packed, alphas));
+                    }
+                    packed.store_slice(chunk);
+                }
+
+                let remainder = chunks.into_remainder();
+                let col_offset = (width / 4) * 4;
+                for (col, column) in remainder
+                    .chunks_exact_mut(Tile::HEIGHT as usize)
+                    .enumerate()
+                {
+                    let img_x = x + col_offset + col;
+                    for (row, (dst, row_start)) in
+                        column.iter_mut().zip([r0, r1, r2, r3]).enumerate()
+                    {
+                        let alpha = data[row_start + img_x].a;
+                        *dst = match alphas {
+                            Some(alphas) => div_255(
+                                u16::from(alpha) * u16::from(alphas[(col_offset + col) * 4 + row]),
+                            ) as u8,
+                            None => alpha,
+                        };
+                    }
+                }
+            } else {
+                let columns = out.chunks_exact_mut(Tile::HEIGHT as usize);
+                for (col, column) in columns.enumerate() {
+                    let img_x = (x + col as i32).clamp(0, img_width - 1) as usize;
+                    column.copy_from_slice(&[
+                        data[r0 + img_x].a,
+                        data[r1 + img_x].a,
+                        data[r2 + img_x].a,
+                        data[r3 + img_x].a,
+                    ]);
+                }
+
+                if let Some(alphas) = alphas {
+                    for (dst, alpha) in out.iter_mut().zip(alphas) {
+                        *dst = div_255(u16::from(*dst) * u16::from(*alpha)) as u8;
+                    }
+                }
+            }
+        },
+    );
+}
 
 /// A painter for nearest-neighbor images with no skewing.
 #[derive(Debug)]
@@ -546,6 +653,55 @@ const fn cubic_resampler(b: f32, c: f32) -> [[f32; 4]; 4] {
 mod tests {
     use super::*;
     use vello_common::fearless_simd::{Fallback, SimdMask};
+
+    #[test]
+    fn pad_alpha_mask_matches_reference() {
+        let simd = Fallback::new();
+        let (width, height) = (9_u16, 7_u16);
+        let mut pixmap = Pixmap::new(width, height);
+        for y in 0..height {
+            for x in 0..width {
+                let a = (y * width + x) as u8 * 3;
+                pixmap.set_pixel(
+                    x,
+                    y,
+                    vello_common::color::PremulRgba8 {
+                        r: 0,
+                        g: 0,
+                        b: 0,
+                        a,
+                    },
+                );
+            }
+        }
+        let alphas: Vec<u8> = (0..64).map(|i| (i * 37 % 256) as u8).collect();
+
+        for (x, y) in [(0, 0), (1, 2), (5, 3), (-3, -2), (6, 5), (-5, 6)] {
+            for span_width in [4_usize, 8, 16] {
+                for alphas in [None, Some(&alphas[..span_width * 4])] {
+                    let mut out = Vec::new();
+                    pad_alpha_mask(simd, &pixmap, x, y, span_width, alphas, &mut out);
+
+                    for col in 0..span_width {
+                        for row in 0..4 {
+                            let img_x = (x + col as i32).clamp(0, i32::from(width) - 1) as u16;
+                            let img_y = (y + row as i32).clamp(0, i32::from(height) - 1) as u16;
+                            let idx = col * 4 + row;
+                            let mut expected = pixmap.sample(img_x, img_y).a;
+                            if let Some(alphas) = alphas {
+                                expected =
+                                    div_255(u16::from(expected) * u16::from(alphas[idx])) as u8;
+                            }
+                            assert_eq!(
+                                out[idx], expected,
+                                "mismatch at x={x}, y={y}, width={span_width}, col={col}, row={row}"
+                            );
+                        }
+                    }
+                }
+            }
+        }
+    }
 
     fn assert_extend(mode: crate::peniko::Extend, max: f32, values: [f32; 4], expected: [u32; 4]) {
         let simd = Fallback::new();
