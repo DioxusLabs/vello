@@ -49,8 +49,6 @@
 //! - `DiffuseLighting`, `SpecularLighting` - Lighting effects
 
 use crate::color::{AlphaColor, Srgb};
-#[cfg(not(feature = "std"))]
-use crate::kurbo::common::FloatFuncs as _;
 use crate::kurbo::{Affine, Rect, Vec2};
 use alloc::sync::Arc;
 use alloc::vec::Vec;
@@ -1163,6 +1161,9 @@ pub enum LightSource {
 /// These 4x5 matrices are used with the `ColorMatrix` filter primitive.
 /// Each row transforms a color channel: [R, G, B, A, offset].
 pub mod matrices {
+    #[cfg(not(feature = "std"))]
+    use crate::kurbo::common::FloatFuncs as _;
+
     /// Identity matrix (no change).
     pub const IDENTITY: [f32; 20] = [
         1.0, 0.0, 0.0, 0.0, 0.0, // Red
