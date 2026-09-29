@@ -3091,36 +3091,71 @@ impl WebGlRendererContext<'_> {
         plan: &FilterPassPlan,
         bindings: FilterPassBindings,
     ) -> Result<(), WebGlError> {
-        if let Some(copy_pass) = plan.copy_pass() {
-            self.programs.upload_copy_instances(self.gl, copy_pass);
-            self.gl.disable(WebGl2RenderingContext::BLEND);
-            self.gl.disable(WebGl2RenderingContext::SCISSOR_TEST);
-            self.gl.disable(WebGl2RenderingContext::DEPTH_TEST);
-            self.gl.depth_mask(false);
-            self.gl
-                .bind_vertex_array(Some(&self.programs.resources.copy_vao));
-            self.gl.use_program(Some(&self.programs.copy_program));
-            self.gl.bind_framebuffer(
-                WebGl2RenderingContext::FRAMEBUFFER,
-                Some(self.programs.resources.scratch_framebuffer()),
-            );
-            let scratch_size = self.texture_size();
-            self.gl.viewport(
-                0,
-                0,
-                i32::from(scratch_size.width()),
-                i32::from(scratch_size.height()),
-            );
-            self.gl.active_texture(WebGl2RenderingContext::TEXTURE0);
-            self.gl.bind_texture(
-                WebGl2RenderingContext::TEXTURE_2D,
-                Some(self.programs.resources.layer_texture(bindings.target())),
-            );
-            self.gl
-                .uniform1i(Some(&self.programs.copy_uniforms.source_texture), 0);
-            self.draw_instanced_quads(checked_instance_count(copy_pass.len())?);
+        for (step_index, step) in plan.steps().enumerate() {
+            if let Some(copy_pass) = step.copy_pass() {
+                self.copy_layer_to_scratch(copy_pass, bindings.target())?;
+            }
+
+            let instances = step.filters();
+            if instances.is_empty() {
+                continue;
+            }
+
+            self.do_filter_instance_pass(
+                instances,
+                bindings.input(step_index),
+                bindings.output(step_index),
+            )?;
         }
 
+        self.gl.bind_vertex_array(None);
+
+        Ok(())
+    }
+
+    /// Copy regions of a layer texture into the scratch texture, at the same position.
+    fn copy_layer_to_scratch(
+        &mut self,
+        copy_pass: &[GpuCopyInstance],
+        source: LayerTextureId,
+    ) -> Result<(), WebGlError> {
+        self.programs.upload_copy_instances(self.gl, copy_pass);
+        self.gl.disable(WebGl2RenderingContext::BLEND);
+        self.gl.disable(WebGl2RenderingContext::SCISSOR_TEST);
+        self.gl.disable(WebGl2RenderingContext::DEPTH_TEST);
+        self.gl.depth_mask(false);
+        self.gl
+            .bind_vertex_array(Some(&self.programs.resources.copy_vao));
+        self.gl.use_program(Some(&self.programs.copy_program));
+        self.gl.bind_framebuffer(
+            WebGl2RenderingContext::FRAMEBUFFER,
+            Some(self.programs.resources.scratch_framebuffer()),
+        );
+        let scratch_size = self.texture_size();
+        self.gl.viewport(
+            0,
+            0,
+            i32::from(scratch_size.width()),
+            i32::from(scratch_size.height()),
+        );
+        self.gl.active_texture(WebGl2RenderingContext::TEXTURE0);
+        self.gl.bind_texture(
+            WebGl2RenderingContext::TEXTURE_2D,
+            Some(self.programs.resources.layer_texture(source)),
+        );
+        self.gl
+            .uniform1i(Some(&self.programs.copy_uniforms.source_texture), 0);
+        self.draw_instanced_quads(checked_instance_count(copy_pass.len())?);
+
+        Ok(())
+    }
+
+    fn do_filter_instance_pass(
+        &self,
+        instances: &[FilterInstanceData],
+        input: LayerTextureId,
+        output: LayerTextureId,
+    ) -> Result<(), WebGlError> {
         self.gl.use_program(Some(&self.programs.filter_program));
         self.gl
             .bind_vertex_array(Some(&self.programs.resources.filter_vao));
@@ -3141,25 +3176,6 @@ impl WebGlRendererContext<'_> {
         self.gl
             .uniform1i(Some(&self.programs.filter_uniforms.original_texture), 2);
 
-        for (step_index, instances) in plan.steps().enumerate() {
-            self.do_filter_instance_pass(
-                instances,
-                bindings.input(step_index),
-                bindings.output(step_index),
-            )?;
-        }
-
-        self.gl.bind_vertex_array(None);
-
-        Ok(())
-    }
-
-    fn do_filter_instance_pass(
-        &self,
-        instances: &[FilterInstanceData],
-        input: LayerTextureId,
-        output: LayerTextureId,
-    ) -> Result<(), WebGlError> {
         self.gl.disable(WebGl2RenderingContext::BLEND);
         self.gl.disable(WebGl2RenderingContext::SCISSOR_TEST);
         self.gl.disable(WebGl2RenderingContext::DEPTH_TEST);

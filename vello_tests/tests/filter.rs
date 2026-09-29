@@ -8,9 +8,9 @@ use crate::util::{circular_star, stops_blue_green_red_yellow};
 use crate::{renderer::Renderer, util::layout_glyphs_roboto};
 use vello_common::color::AlphaColor;
 use vello_common::color::palette::css::{
-    BLACK, LIME, PURPLE, REBECCA_PURPLE, ROYAL_BLUE, SEA_GREEN, TOMATO, VIOLET,
+    BLACK, DIM_GRAY, LIME, PURPLE, REBECCA_PURPLE, ROYAL_BLUE, SEA_GREEN, TOMATO, VIOLET,
 };
-use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
+use vello_common::filter_effects::{EdgeMode, Filter, FilterFunction, FilterPrimitive, matrices};
 use vello_common::kurbo::{Affine, BezPath, Circle, Point, Rect, Shape, Stroke};
 use vello_common::paint::Image;
 use vello_common::peniko::{
@@ -155,6 +155,58 @@ fn filter_offset_nested(ctx: &mut impl Renderer) {
     ctx.fill_rect(&Rect::new(5.0, 5.0, 55.0, 55.0));
     ctx.pop_layer();
     ctx.pop_layer();
+}
+
+fn color_matrix_scene(ctx: &mut impl Renderer, matrix: [f32; 20], translucent: impl Shape) {
+    ctx.set_paint(DIM_GRAY);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 120.0, 80.0));
+    ctx.push_filter_layer(Filter::from_primitive(FilterPrimitive::ColorMatrix {
+        matrix,
+    }));
+    ctx.set_paint(RED);
+    ctx.fill_rect(&Rect::new(10.0, 10.0, 55.0, 35.0));
+    ctx.set_paint(GREEN);
+    ctx.fill_rect(&Rect::new(65.0, 10.0, 110.0, 35.0));
+    ctx.set_paint(BLUE);
+    ctx.fill_rect(&Rect::new(10.0, 45.0, 55.0, 70.0));
+    ctx.set_paint(AlphaColor::from_rgba8(60, 120, 240, 128));
+    ctx.fill_path(&translucent.to_path(0.1));
+    ctx.pop_layer();
+}
+
+/// A matrix that only mixes the color channels, which `vello_cpu` applies directly to the
+/// premultiplied colors.
+#[vello_test(skip_multithreaded, width = 120, height = 80)]
+fn filter_color_matrix_sepia(ctx: &mut impl Renderer) {
+    color_matrix_scene(ctx, matrices::SEPIA, Circle::new((87.5, 57.5), 13.0));
+}
+
+/// A matrix whose color channels depend on alpha, which requires unpremultiplying.
+#[vello_test(skip_multithreaded, width = 120, height = 80)]
+fn filter_color_matrix_alpha_to_black(ctx: &mut impl Renderer) {
+    color_matrix_scene(
+        ctx,
+        matrices::ALPHA_TO_BLACK,
+        Circle::new((87.5, 57.5), 13.0),
+    );
+}
+
+/// A matrix with a distinct non-zero value in every coefficient, so that any mix-up of the
+/// matrix layout shows. The positive alpha offset also paints the transparent parts of the
+/// layer. It would equally reveal the faint anti-aliased edge of a circle, whose unpremultiplied
+/// color differs a lot between backends, so the translucent shape is a rectangle here.
+#[vello_test(skip_multithreaded, width = 120, height = 80)]
+fn filter_color_matrix_all_coefficients(ctx: &mut impl Renderer) {
+    color_matrix_scene(
+        ctx,
+        [
+            0.9, 0.12, -0.2, 0.05, 0.15, //
+            -0.3, 0.8, 0.22, 0.14, -0.07, //
+            0.25, -0.11, 0.7, -0.18, 0.35, //
+            0.08, 0.04, -0.06, 0.78, 0.1,
+        ],
+        Rect::new(65.0, 45.0, 110.0, 70.0),
+    );
 }
 
 /// Test Gaussian blur with small radius (`std_deviation` = 2.0, no decimation).
@@ -2113,4 +2165,168 @@ fn filter_with_clip_and_inner_clip(ctx: &mut impl Renderer) {
     ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
     ctx.pop_layer();
     ctx.pop_layer();
+}
+
+fn color_chain_scene(ctx: &mut impl Renderer, functions: &[FilterFunction]) {
+    ctx.set_paint(DIM_GRAY);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 120.0, 80.0));
+    ctx.push_filter_layer(Filter::from_functions(functions.iter().copied()));
+    ctx.set_paint(RED);
+    ctx.fill_rect(&Rect::new(10.0, 10.0, 55.0, 35.0));
+    ctx.set_paint(GREEN);
+    ctx.fill_rect(&Rect::new(65.0, 10.0, 110.0, 35.0));
+    ctx.set_paint(BLUE);
+    ctx.fill_rect(&Rect::new(10.0, 45.0, 55.0, 70.0));
+    ctx.set_paint(AlphaColor::from_rgba8(60, 120, 240, 128));
+    ctx.fill_rect(&Rect::new(65.0, 45.0, 110.0, 70.0));
+    ctx.pop_layer();
+}
+
+/// Filter functions are applied in order, with the result clamped after each one. So
+/// `brightness(2) contrast(0.5)` differs from `contrast(0.5) brightness(2)`.
+#[vello_test(skip_multithreaded, width = 120, height = 80)]
+fn filter_chain_brightness_then_contrast(ctx: &mut impl Renderer) {
+    color_chain_scene(
+        ctx,
+        &[
+            FilterFunction::Brightness { amount: 2.0 },
+            FilterFunction::Contrast { amount: 0.5 },
+        ],
+    );
+}
+
+#[vello_test(skip_multithreaded, width = 120, height = 80)]
+fn filter_chain_contrast_then_brightness(ctx: &mut impl Renderer) {
+    color_chain_scene(
+        ctx,
+        &[
+            FilterFunction::Contrast { amount: 0.5 },
+            FilterFunction::Brightness { amount: 2.0 },
+        ],
+    );
+}
+
+#[vello_test(skip_multithreaded, width = 120, height = 80)]
+fn filter_chain_grayscale_invert_opacity(ctx: &mut impl Renderer) {
+    color_chain_scene(
+        ctx,
+        &[
+            FilterFunction::Grayscale { amount: 1.0 },
+            FilterFunction::Invert { amount: 1.0 },
+            FilterFunction::Opacity { amount: 0.5 },
+        ],
+    );
+}
+
+#[vello_test(skip_multithreaded, width = 120, height = 80)]
+fn filter_chain_sepia_hue_rotate_saturate(ctx: &mut impl Renderer) {
+    color_chain_scene(
+        ctx,
+        &[
+            FilterFunction::Sepia { amount: 0.8 },
+            FilterFunction::HueRotate { angle: 90.0 },
+            FilterFunction::Saturate { amount: 2.0 },
+        ],
+    );
+}
+
+/// The drop shadow operates on the blurred shape, and the layer bounds must grow by the
+/// blur *and* the shadow expansion so that nothing gets clipped.
+#[vello_test(skip_multithreaded, gpu_tolerance = 1)]
+fn filter_chain_blur_then_drop_shadow(ctx: &mut impl Renderer) {
+    let filter = Filter::from_primitives([
+        FilterPrimitive::GaussianBlur {
+            std_deviation: 2.0,
+            edge_mode: EdgeMode::None,
+        },
+        FilterPrimitive::DropShadow {
+            dx: 14.0,
+            dy: 14.0,
+            std_deviation: 2.0,
+            color: REBECCA_PURPLE,
+            edge_mode: EdgeMode::None,
+        },
+    ]);
+
+    ctx.push_filter_layer(filter);
+    ctx.set_paint(ROYAL_BLUE);
+    ctx.fill_rect(&Rect::new(20.0, 20.0, 60.0, 60.0));
+    ctx.pop_layer();
+}
+
+/// The blur operates on the shape together with its shadow.
+#[vello_test(skip_multithreaded, gpu_tolerance = 1)]
+fn filter_chain_drop_shadow_then_blur(ctx: &mut impl Renderer) {
+    let filter = Filter::from_primitives([
+        FilterPrimitive::DropShadow {
+            dx: 14.0,
+            dy: 14.0,
+            std_deviation: 2.0,
+            color: REBECCA_PURPLE,
+            edge_mode: EdgeMode::None,
+        },
+        FilterPrimitive::GaussianBlur {
+            std_deviation: 2.0,
+            edge_mode: EdgeMode::None,
+        },
+    ]);
+
+    ctx.push_filter_layer(filter);
+    ctx.set_paint(ROYAL_BLUE);
+    ctx.fill_rect(&Rect::new(20.0, 20.0, 60.0, 60.0));
+    ctx.pop_layer();
+}
+
+/// The drop shadow must composite the *offset* shape on top of the shadow, not the
+/// originally rendered layer.
+#[vello_test(skip_multithreaded, gpu_tolerance = 1)]
+fn filter_chain_offset_then_drop_shadow(ctx: &mut impl Renderer) {
+    let filter = Filter::from_primitives([
+        FilterPrimitive::Offset { dx: 15.0, dy: 5.0 },
+        FilterPrimitive::DropShadow {
+            dx: 10.0,
+            dy: 10.0,
+            std_deviation: 2.0,
+            color: TOMATO,
+            edge_mode: EdgeMode::None,
+        },
+    ]);
+
+    ctx.push_filter_layer(filter);
+    ctx.set_paint(ROYAL_BLUE);
+    ctx.fill_rect(&Rect::new(10.0, 20.0, 50.0, 60.0));
+    ctx.pop_layer();
+}
+
+/// A color operation after a drop shadow applies to the shape and its shadow alike.
+#[vello_test(skip_multithreaded, gpu_tolerance = 1)]
+fn filter_chain_drop_shadow_then_grayscale(ctx: &mut impl Renderer) {
+    let filter = Filter::from_primitives([
+        FilterPrimitive::DropShadow {
+            dx: 12.0,
+            dy: 12.0,
+            std_deviation: 2.0,
+            color: TOMATO,
+            edge_mode: EdgeMode::None,
+        },
+        FilterPrimitive::color_matrix(matrices::grayscale(1.0)),
+    ]);
+
+    ctx.push_filter_layer(filter);
+    ctx.set_paint(ROYAL_BLUE);
+    ctx.fill_rect(&Rect::new(20.0, 20.0, 60.0, 60.0));
+    ctx.pop_layer();
+}
+
+/// Filter functions that lower to a no-op (like `brightness(1)`) still leave the layer intact.
+#[vello_test(skip_multithreaded, width = 120, height = 80)]
+fn filter_chain_neutral_functions(ctx: &mut impl Renderer) {
+    color_chain_scene(
+        ctx,
+        &[
+            FilterFunction::Brightness { amount: 1.0 },
+            FilterFunction::Blur { radius: 0.0 },
+            FilterFunction::Invert { amount: 0.0 },
+        ],
+    );
 }

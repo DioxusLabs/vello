@@ -134,7 +134,7 @@ use self::round::{
     BlendOp, FilterOp, FilterTextureRegions, Round, RoundStage, Rounds, SchedulePoint,
 };
 use crate::draw::{Draw, DrawBuffers, DrawBuilder, DrawState, RectU16Ext};
-use crate::filter::{FilterContext, FilterPassPlan, PreparedGpuFilter};
+use crate::filter::{FilterContext, FilterPassPlan, PreparedGpuFilterChain};
 use crate::paint::PaintResolver;
 use crate::scene::RecordedDraw;
 use crate::schedule::allocate::AllocatedTextureRegion;
@@ -438,7 +438,7 @@ impl<'a, 'p> Scheduler<'a, 'p> {
             ))?;
             let textures = FilterTextureRegions::new(region.texture, temporary.allocation.region);
 
-            if filter.data.needs_copy_pass() {
+            if filter.needs_copy_pass() {
                 self.cursor.require_scratch_texture();
             }
 
@@ -461,8 +461,7 @@ impl<'a, 'p> Scheduler<'a, 'p> {
                 &mut self.storage.buffers,
                 FilterOp {
                     textures,
-                    filter_data_offset: filter.data_offset,
-                    gpu_filter: filter.data,
+                    filters: filter,
                 },
             );
 
@@ -919,8 +918,8 @@ impl LayerSamplePlacement {
 struct LayerTarget {
     /// Atlas allocation backing the layer.
     allocation: AllocatedTextureRegion,
-    /// Prepared filter applied after the layer's draws, if any.
-    filter: Option<PreparedGpuFilter>,
+    /// Prepared filter chain applied after the layer's draws, if any.
+    filter: Option<PreparedGpuFilterChain>,
     /// Dependency state for operations targeting this layer.
     schedule_state: TargetScheduleState<LayerTextureRegion>,
 }

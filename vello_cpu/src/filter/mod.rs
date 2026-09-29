@@ -8,6 +8,7 @@
 //! Filters are applied to rendered layer pixmaps and may use scratch storage for
 //! intermediate buffers.
 
+mod color_matrix;
 pub(crate) mod context;
 mod drop_shadow;
 mod flood;
@@ -55,29 +56,31 @@ pub(crate) trait FilterEffect {
 /// * `filter_scratch` - Reusable scratch storage for intermediate buffers
 /// * `transform` - The transformation matrix to extract scale from for filter parameters
 ///
-/// # Limitations
-/// Currently only supports filter graphs with a single primitive.
-/// Multi-primitive filter graphs are not yet implemented.
+/// The primitives of the filter are applied in order, each operating in place on the result
+/// of the previous one.
 pub(crate) fn filter_lowp(
     filter: &Filter,
     pixmap: &mut Pixmap,
     filter_scratch: &mut ScratchBuffer,
     transform: Affine,
 ) {
-    let prepared_filter = PreparedFilter::new(filter, &transform);
-
-    match prepared_filter {
-        PreparedFilter::Flood(flood) => {
-            flood.execute_lowp(pixmap, filter_scratch);
-        }
-        PreparedFilter::GaussianBlur(blur) => {
-            blur.execute_lowp(pixmap, filter_scratch);
-        }
-        PreparedFilter::Offset(offset) => {
-            offset.execute_lowp(pixmap, filter_scratch);
-        }
-        PreparedFilter::DropShadow(drop_shadow) => {
-            drop_shadow.execute_lowp(pixmap, filter_scratch);
+    for prepared_filter in PreparedFilter::chain(filter, &transform) {
+        match prepared_filter {
+            PreparedFilter::Flood(flood) => {
+                flood.execute_lowp(pixmap, filter_scratch);
+            }
+            PreparedFilter::GaussianBlur(blur) => {
+                blur.execute_lowp(pixmap, filter_scratch);
+            }
+            PreparedFilter::Offset(offset) => {
+                offset.execute_lowp(pixmap, filter_scratch);
+            }
+            PreparedFilter::DropShadow(drop_shadow) => {
+                drop_shadow.execute_lowp(pixmap, filter_scratch);
+            }
+            PreparedFilter::ColorMatrix(color_matrix) => {
+                color_matrix.execute_lowp(pixmap, filter_scratch);
+            }
         }
     }
 }
@@ -93,29 +96,31 @@ pub(crate) fn filter_lowp(
 /// * `filter_scratch` - Reusable scratch storage for intermediate buffers
 /// * `transform` - The transformation matrix to extract scale from for filter parameters
 ///
-/// # Limitations
-/// Currently only supports filter graphs with a single primitive.
-/// Multi-primitive filter graphs are not yet implemented.
+/// The primitives of the filter are applied in order, each operating in place on the result
+/// of the previous one.
 pub(crate) fn filter_highp(
     filter: &Filter,
     pixmap: &mut Pixmap,
     filter_scratch: &mut ScratchBuffer,
     transform: Affine,
 ) {
-    let prepared_filter = PreparedFilter::new(filter, &transform);
-
-    match prepared_filter {
-        PreparedFilter::Flood(flood) => {
-            flood.execute_highp(pixmap, filter_scratch);
-        }
-        PreparedFilter::GaussianBlur(blur) => {
-            blur.execute_highp(pixmap, filter_scratch);
-        }
-        PreparedFilter::Offset(offset) => {
-            offset.execute_highp(pixmap, filter_scratch);
-        }
-        PreparedFilter::DropShadow(drop_shadow) => {
-            drop_shadow.execute_highp(pixmap, filter_scratch);
+    for prepared_filter in PreparedFilter::chain(filter, &transform) {
+        match prepared_filter {
+            PreparedFilter::Flood(flood) => {
+                flood.execute_highp(pixmap, filter_scratch);
+            }
+            PreparedFilter::GaussianBlur(blur) => {
+                blur.execute_highp(pixmap, filter_scratch);
+            }
+            PreparedFilter::Offset(offset) => {
+                offset.execute_highp(pixmap, filter_scratch);
+            }
+            PreparedFilter::DropShadow(drop_shadow) => {
+                drop_shadow.execute_highp(pixmap, filter_scratch);
+            }
+            PreparedFilter::ColorMatrix(color_matrix) => {
+                color_matrix.execute_highp(pixmap, filter_scratch);
+            }
         }
     }
 }

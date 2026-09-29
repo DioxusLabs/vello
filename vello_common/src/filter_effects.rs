@@ -14,30 +14,29 @@
 //! ### ✅ Implemented
 //!
 //! **Filter Functions:**
-//! - `Blur` - Gaussian blur effect
+//! - `Blur`, `Brightness`, `Contrast`, `Grayscale`, `HueRotate`, `Invert`, `Opacity`,
+//!   `Saturate`, `Sepia` - all CSS filter functions
 //!
-//! **Filter Primitives (Single Use Only):**
+//! **Filter Primitives:**
 //! - `Flood` - Solid color fill
 //! - `GaussianBlur` - Gaussian blur filter
 //! - `DropShadow` - Drop shadow effect (compound primitive)
 //! - `DropShadowOnly` - Drop shadow effect without the original input
-//! - `Offset` - Translation/shift (single primitive)
+//! - `ColorMatrix` - Matrix-based color transformation
+//! - `Offset` - Translation/shift
 //!
-//! **Note:** Currently only single primitive filters are supported. Filter graphs with
-//! multiple connected primitives are not yet implemented.
+//! **Filter Chains:**
+//! - Multiple primitives in a `FilterGraph` are applied as a linear chain in insertion order,
+//!   each primitive taking the result of the previous one as its input. This is what CSS
+//!   filter lists (e.g. `filter: blur(2px) drop-shadow(...)`) need.
 //!
 //! ### 🚧 Not Yet Implemented
 //!
 //! **Core Features:**
-//! - `FilterGraph` execution - Chaining multiple filter primitives together
-//! - `FilterInputs` - Connecting primitives to create complex effects
-//!
-//! **Filter Functions:**
-//! - `Brightness`, `Contrast`, `Grayscale`, `HueRotate`, `Invert`,
-//!   `Opacity`, `Saturate`, `Sepia`
+//! - `FilterInputs` - Arbitrary filter graphs where primitives reference specific inputs
+//!   (`in`/`in2`). Inputs are currently ignored, see [`FilterGraph::add`].
 //!
 //! **Filter Primitives:**
-//! - `ColorMatrix` - Matrix-based color transformation
 //! - `Composite` - Porter-Duff compositing operations
 //! - `Blend` - Blend mode operations
 //! - `Morphology` - Dilate/erode operations
@@ -75,16 +74,15 @@ impl Filter {
     /// Converts a high-level CSS-style filter function into a filter graph.
     /// Use this for simple effects like blur, brightness, etc.
     pub fn from_function(function: FilterFunction) -> Self {
-        // Convert function to primitive
-        let primitive = match function {
-            FilterFunction::Blur { radius } => FilterPrimitive::GaussianBlur {
-                std_deviation: radius,
-                edge_mode: EdgeMode::default(),
-            },
-            _ => unimplemented!("Filter function {:?} not supported", function),
-        };
+        Self::from_primitive(function.to_primitive())
+    }
 
-        Self::from_primitive(primitive)
+    /// Create a filter system from a list of filter functions.
+    ///
+    /// The functions are applied in order, each operating on the result of the previous one,
+    /// like a CSS `filter` property with multiple functions.
+    pub fn from_functions(functions: impl IntoIterator<Item = FilterFunction>) -> Self {
+        Self::from_primitives(functions.into_iter().map(|f| f.to_primitive()))
     }
 
     /// Create a filter system from a filter primitive.
@@ -92,9 +90,19 @@ impl Filter {
     /// Creates a simple filter graph with a single primitive.
     /// Use this for direct access to low-level SVG filter operations.
     pub fn from_primitive(primitive: FilterPrimitive) -> Self {
+        Self::from_primitives([primitive])
+    }
+
+    /// Create a filter system from a chain of filter primitives.
+    ///
+    /// The primitives are applied in order, each operating on the result of the previous one.
+    /// An empty chain leaves the filtered content unchanged.
+    pub fn from_primitives(primitives: impl IntoIterator<Item = FilterPrimitive>) -> Self {
         let mut graph = FilterGraph::new();
-        let filter_id = graph.add(primitive, None);
-        graph.set_output(filter_id);
+        for primitive in primitives {
+            let filter_id = graph.add(primitive, None);
+            graph.set_output(filter_id);
+        }
 
         Self {
             graph: Arc::new(graph),
@@ -146,6 +154,9 @@ impl Filter {
 ///
 /// The graph represents a pipeline of filter primitives where outputs of some
 /// primitives can be used as inputs to others. Each primitive has a unique `FilterId`.
+///
+/// Note: Explicit inputs are not supported yet. The primitives are applied as a linear
+/// chain in insertion order, each taking the result of the previous one as input.
 #[derive(Debug, Clone, PartialEq)]
 pub struct FilterGraph {
     /// All filter primitives in the graph, stored in insertion order.
@@ -154,9 +165,9 @@ pub struct FilterGraph {
     pub output: FilterId,
     /// Next available filter ID (monotonically increasing counter).
     next_id: u16,
-    /// Accumulated filter expansion from all primitives in the graph, cached in user space.
+    /// Accumulated filter expansion of the whole chain, cached in user space.
     filter_expansion: Rect,
-    /// Accumulated source expansion from all primitives in the graph, cached in user space.
+    /// Accumulated source expansion of the whole chain, cached in user space.
     source_expansion: Rect,
 }
 
@@ -182,12 +193,18 @@ impl FilterGraph {
     ///
     /// Returns a `FilterId` that can be referenced by other primitives.
     /// Automatically updates the accumulated source and filter expansion requirements.
+    ///
+    /// Note: `inputs` are currently ignored. The primitive is appended to the chain and
+    /// takes the result of the previously added primitive (or the source graphic, for the
+    /// first primitive) as its input.
     pub fn add(&mut self, primitive: FilterPrimitive, _inputs: Option<FilterInputs>) -> FilterId {
         let id = FilterId(self.next_id);
         self.next_id += 1;
 
-        self.filter_expansion = self.filter_expansion.union(primitive.filter_expansion());
-        self.source_expansion = self.source_expansion.union(primitive.source_expansion());
+        // Each primitive expands the (already expanded) output of the previous one, so the
+        // expansions of a chain add up in each direction.
+        self.filter_expansion = expansion_sum(self.filter_expansion, primitive.filter_expansion());
+        self.source_expansion = expansion_sum(self.source_expansion, primitive.source_expansion());
 
         self.primitives.push(primitive);
 
@@ -210,6 +227,12 @@ impl FilterGraph {
     }
 }
 
+/// Combine two expansion rects (which both contain the origin) so that the result covers
+/// applying the second expansion to the area of the first, i.e. their Minkowski sum.
+fn expansion_sum(a: Rect, b: Rect) -> Rect {
+    Rect::new(a.x0 + b.x0, a.y0 + b.y0, a.x1 + b.x1, a.y1 + b.y1)
+}
+
 /// All possible filter effects.
 ///
 /// This enum allows choosing between high-level filter functions (simple CSS-style effects)
@@ -230,7 +253,7 @@ pub enum FilterEffect {
 /// commonly-used visual effects without needing to construct a filter graph.
 ///
 /// See: <https://drafts.fxtf.org/filter-effects/#filter-functions>
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum FilterFunction {
     /// Gaussian blur effect.
     ///
@@ -249,11 +272,6 @@ pub enum FilterFunction {
         /// approximately 3 times this value in each direction.
         radius: f32,
     },
-    //
-    // ============================================================
-    // TODO: The following filter functions are not yet implemented
-    // ============================================================
-    //
     /// Brightness adjustment.
     ///
     /// Adjusts the brightness of the input image using a linear multiplier.
@@ -319,6 +337,35 @@ pub enum FilterFunction {
         /// Values should be in range [0.0, 1.0].
         amount: f32,
     },
+}
+
+impl FilterFunction {
+    /// Convert the filter function into the equivalent filter primitive.
+    ///
+    /// All color adjusting functions are expressed as [`FilterPrimitive::ColorMatrix`], using
+    /// the matrices given in the specification. Amounts are clamped to their valid ranges.
+    ///
+    /// See: <https://drafts.fxtf.org/filter-effects/#ShorthandEquivalents>
+    pub fn to_primitive(&self) -> FilterPrimitive {
+        match *self {
+            Self::Blur { radius } => FilterPrimitive::GaussianBlur {
+                std_deviation: radius,
+                edge_mode: EdgeMode::default(),
+            },
+            Self::Brightness { amount } => {
+                FilterPrimitive::color_matrix(matrices::brightness(amount))
+            }
+            Self::Contrast { amount } => FilterPrimitive::color_matrix(matrices::contrast(amount)),
+            Self::Grayscale { amount } => {
+                FilterPrimitive::color_matrix(matrices::grayscale(amount))
+            }
+            Self::HueRotate { angle } => FilterPrimitive::color_matrix(matrices::hue_rotate(angle)),
+            Self::Invert { amount } => FilterPrimitive::color_matrix(matrices::invert(amount)),
+            Self::Opacity { amount } => FilterPrimitive::color_matrix(matrices::opacity(amount)),
+            Self::Saturate { amount } => FilterPrimitive::color_matrix(matrices::saturate(amount)),
+            Self::Sepia { amount } => FilterPrimitive::color_matrix(matrices::sepia(amount)),
+        }
+    }
 }
 
 /// Edge mode for filter operations.
@@ -426,15 +473,13 @@ pub enum FilterPrimitive {
         /// Edge mode for handling boundaries during blur operation.
         edge_mode: EdgeMode,
     },
-    //
-    // ============================================================
-    // TODO: The following filter primitives are not yet implemented
-    // ============================================================
-    //
     /// Matrix-based color transformation.
     ///
     /// Applies a 4x5 matrix transformation to colors, allowing arbitrary
     /// color space transformations, hue shifts, and color adjustments.
+    ///
+    /// Like SVG `feColorMatrix`, the matrix is applied to straight (unpremultiplied) colors,
+    /// offsets are in `[0, 1]` units, and the results are clamped to `[0, 1]`.
     ColorMatrix {
         /// 4x5 color transformation matrix: 4 rows (R,G,B,A) × 5 columns (R,G,B,A,offset).
         /// Each output channel is computed as a linear combination of input channels plus offset.
@@ -450,7 +495,11 @@ pub enum FilterPrimitive {
         /// Vertical offset in pixels. Positive values shift down.
         dy: f32,
     },
-
+    //
+    // ============================================================
+    // TODO: The following filter primitives are not yet implemented
+    // ============================================================
+    //
     /// Composite two inputs using Porter-Duff compositing operations.
     ///
     /// Combines two input images using standard compositing operators
@@ -574,6 +623,11 @@ pub enum FilterPrimitive {
 }
 
 impl FilterPrimitive {
+    /// Create a [`FilterPrimitive::ColorMatrix`].
+    pub fn color_matrix(matrix: [f32; 20]) -> Self {
+        Self::ColorMatrix { matrix }
+    }
+
     /// The filter expansion of the primitive, see [`Filter::filter_expansion`].
     pub fn filter_expansion(&self) -> Rect {
         match self {
@@ -656,10 +710,10 @@ fn blur_radius(std_deviation: f32) -> f64 {
 
 #[cfg(test)]
 mod expansion_tests {
-    use super::FilterPrimitive;
+    use super::{Filter, FilterPrimitive};
     use crate::color::palette::css::RED;
     use crate::filter_effects::EdgeMode;
-    use crate::kurbo::Rect;
+    use crate::kurbo::{Affine, Rect};
 
     #[test]
     fn offset_expands_in_direction_of_shift() {
@@ -683,6 +737,41 @@ mod expansion_tests {
 
         assert_eq!(p.filter_expansion(), Rect::new(-4.0, -34.0, 44.0, 14.0));
         assert_eq!(p.source_expansion(), Rect::new(-44.0, -14.0, 4.0, 34.0));
+    }
+
+    #[test]
+    fn chain_expansions_add_up() {
+        let filter = Filter::from_primitives([
+            FilterPrimitive::GaussianBlur {
+                std_deviation: 5.0,
+                edge_mode: EdgeMode::None,
+            },
+            FilterPrimitive::DropShadow {
+                dx: 10.0,
+                dy: 10.0,
+                std_deviation: 5.0,
+                color: RED,
+                edge_mode: EdgeMode::None,
+            },
+        ]);
+
+        // The shadow is computed from the already blurred (expanded) input, so the total
+        // expansion is the sum of both, not their union.
+        assert_eq!(
+            filter.filter_expansion(&Affine::IDENTITY),
+            Rect::new(-20.0, -20.0, 40.0, 40.0)
+        );
+        assert_eq!(
+            filter.source_expansion(&Affine::IDENTITY),
+            Rect::new(-40.0, -40.0, 20.0, 20.0)
+        );
+    }
+
+    #[test]
+    fn empty_chain_has_no_expansion() {
+        let filter = Filter::from_primitives([]);
+        assert!(filter.graph.primitives.is_empty());
+        assert_eq!(filter.filter_expansion(&Affine::IDENTITY), Rect::ZERO);
     }
 }
 
@@ -1072,6 +1161,9 @@ pub enum LightSource {
 /// These 4x5 matrices are used with the `ColorMatrix` filter primitive.
 /// Each row transforms a color channel: [R, G, B, A, offset].
 pub mod matrices {
+    #[cfg(not(feature = "std"))]
+    use crate::kurbo::common::FloatFuncs as _;
+
     /// Identity matrix (no change).
     pub const IDENTITY: [f32; 20] = [
         1.0, 0.0, 0.0, 0.0, 0.0, // Red
@@ -1103,6 +1195,193 @@ pub mod matrices {
         0.272, 0.534, 0.131, 0.0, 0.0, // Blue
         0.0, 0.0, 0.0, 1.0, 0.0, // Alpha
     ];
+
+    // The following matrices are the equivalents of the CSS filter functions, see
+    // <https://drafts.fxtf.org/filter-effects/#ShorthandEquivalents>.
+
+    /// A matrix that scales each color channel by `slope` and adds `intercept`, leaving
+    /// alpha unchanged.
+    const fn per_channel(slope: f32, intercept: f32) -> [f32; 20] {
+        [
+            slope, 0.0, 0.0, 0.0, intercept, // Red
+            0.0, slope, 0.0, 0.0, intercept, // Green
+            0.0, 0.0, slope, 0.0, intercept, // Blue
+            0.0, 0.0, 0.0, 1.0, 0.0, // Alpha
+        ]
+    }
+
+    /// Matrix for the CSS `brightness()` function. Negative amounts are treated as 0.
+    pub fn brightness(amount: f32) -> [f32; 20] {
+        per_channel(amount.max(0.0), 0.0)
+    }
+
+    /// Matrix for the CSS `contrast()` function. Negative amounts are treated as 0.
+    pub fn contrast(amount: f32) -> [f32; 20] {
+        let amount = amount.max(0.0);
+        per_channel(amount, 0.5 - 0.5 * amount)
+    }
+
+    /// Matrix for the CSS `invert()` function. The amount is clamped to `[0, 1]`.
+    pub fn invert(amount: f32) -> [f32; 20] {
+        let amount = amount.clamp(0.0, 1.0);
+        per_channel(1.0 - 2.0 * amount, amount)
+    }
+
+    /// Matrix for the CSS `opacity()` function. The amount is clamped to `[0, 1]`.
+    pub fn opacity(amount: f32) -> [f32; 20] {
+        let amount = amount.clamp(0.0, 1.0);
+        [
+            1.0, 0.0, 0.0, 0.0, 0.0, // Red
+            0.0, 1.0, 0.0, 0.0, 0.0, // Green
+            0.0, 0.0, 1.0, 0.0, 0.0, // Blue
+            0.0, 0.0, 0.0, amount, 0.0, // Alpha
+        ]
+    }
+
+    /// Matrix for the CSS `saturate()` function. Negative amounts are treated as 0.
+    pub fn saturate(amount: f32) -> [f32; 20] {
+        let s = amount.max(0.0);
+        [
+            0.213 + 0.787 * s,
+            0.715 - 0.715 * s,
+            0.072 - 0.072 * s,
+            0.0,
+            0.0, // Red
+            0.213 - 0.213 * s,
+            0.715 + 0.285 * s,
+            0.072 - 0.072 * s,
+            0.0,
+            0.0, // Green
+            0.213 - 0.213 * s,
+            0.715 - 0.715 * s,
+            0.072 + 0.928 * s,
+            0.0,
+            0.0, // Blue
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0, // Alpha
+        ]
+    }
+
+    /// Matrix for the CSS `grayscale()` function. The amount is clamped to `[0, 1]`.
+    pub fn grayscale(amount: f32) -> [f32; 20] {
+        let s = 1.0 - amount.clamp(0.0, 1.0);
+        [
+            0.2126 + 0.7874 * s,
+            0.7152 - 0.7152 * s,
+            0.0722 - 0.0722 * s,
+            0.0,
+            0.0, // Red
+            0.2126 - 0.2126 * s,
+            0.7152 + 0.2848 * s,
+            0.0722 - 0.0722 * s,
+            0.0,
+            0.0, // Green
+            0.2126 - 0.2126 * s,
+            0.7152 - 0.7152 * s,
+            0.0722 + 0.9278 * s,
+            0.0,
+            0.0, // Blue
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0, // Alpha
+        ]
+    }
+
+    /// Matrix for the CSS `sepia()` function. The amount is clamped to `[0, 1]`.
+    pub fn sepia(amount: f32) -> [f32; 20] {
+        let s = 1.0 - amount.clamp(0.0, 1.0);
+        [
+            0.393 + 0.607 * s,
+            0.769 - 0.769 * s,
+            0.189 - 0.189 * s,
+            0.0,
+            0.0, // Red
+            0.349 - 0.349 * s,
+            0.686 + 0.314 * s,
+            0.168 - 0.168 * s,
+            0.0,
+            0.0, // Green
+            0.272 - 0.272 * s,
+            0.534 - 0.534 * s,
+            0.131 + 0.869 * s,
+            0.0,
+            0.0, // Blue
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0, // Alpha
+        ]
+    }
+
+    /// Matrix for the CSS `hue-rotate()` function, with the angle given in degrees.
+    pub fn hue_rotate(angle_degrees: f32) -> [f32; 20] {
+        let (sin, cos) = angle_degrees.to_radians().sin_cos();
+        [
+            0.213 + cos * 0.787 - sin * 0.213,
+            0.715 - cos * 0.715 - sin * 0.715,
+            0.072 - cos * 0.072 + sin * 0.928,
+            0.0,
+            0.0, // Red
+            0.213 - cos * 0.213 + sin * 0.143,
+            0.715 + cos * 0.285 + sin * 0.140,
+            0.072 - cos * 0.072 - sin * 0.283,
+            0.0,
+            0.0, // Green
+            0.213 - cos * 0.213 - sin * 0.787,
+            0.715 - cos * 0.715 + sin * 0.715,
+            0.072 + cos * 0.928 + sin * 0.072,
+            0.0,
+            0.0, // Blue
+            0.0,
+            0.0,
+            0.0,
+            1.0,
+            0.0, // Alpha
+        ]
+    }
+
+    #[cfg(test)]
+    mod tests {
+        use super::*;
+
+        fn assert_matrix_eq(a: [f32; 20], b: [f32; 20]) {
+            for (i, (x, y)) in a.iter().zip(b.iter()).enumerate() {
+                assert!((x - y).abs() < 1e-5, "mismatch at index {i}: {x} != {y}");
+            }
+        }
+
+        #[test]
+        fn neutral_amounts_are_identity() {
+            assert_matrix_eq(brightness(1.0), IDENTITY);
+            assert_matrix_eq(contrast(1.0), IDENTITY);
+            assert_matrix_eq(invert(0.0), IDENTITY);
+            assert_matrix_eq(opacity(1.0), IDENTITY);
+            assert_matrix_eq(saturate(1.0), IDENTITY);
+            assert_matrix_eq(grayscale(0.0), IDENTITY);
+            assert_matrix_eq(sepia(0.0), IDENTITY);
+            assert_matrix_eq(hue_rotate(0.0), IDENTITY);
+            assert_matrix_eq(hue_rotate(360.0), IDENTITY);
+        }
+
+        #[test]
+        fn full_amounts_match_constants() {
+            assert_matrix_eq(grayscale(1.0), GRAYSCALE);
+            assert_matrix_eq(sepia(1.0), SEPIA);
+        }
+
+        #[test]
+        fn amounts_are_clamped() {
+            assert_matrix_eq(invert(2.0), invert(1.0));
+            assert_matrix_eq(opacity(-1.0), opacity(0.0));
+            assert_matrix_eq(brightness(-3.0), brightness(0.0));
+        }
+    }
 }
 
 /// Common convolution kernels.

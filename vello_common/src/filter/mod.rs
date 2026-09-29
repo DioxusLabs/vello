@@ -7,6 +7,7 @@
 //! represent a special representation of each filter to be used as the basis for rendering in
 //! `vello_gpu` and `vello_cpu`.
 
+use crate::filter::color_matrix::ColorMatrix;
 use crate::filter::drop_shadow::{DropShadow, transform_shadow_params};
 use crate::filter::flood::Flood;
 use crate::filter::gaussian_blur::{GaussianBlur, transform_blur_params};
@@ -17,7 +18,9 @@ use crate::kurbo::{Affine, Rect, Vec2};
 use crate::math::snap_up;
 use crate::tile::Tile;
 use crate::util::RectExt;
+use smallvec::SmallVec;
 
+pub mod color_matrix;
 pub mod drop_shadow;
 pub mod flood;
 pub mod gaussian_blur;
@@ -34,17 +37,34 @@ pub enum PreparedFilter {
     Offset(Offset),
     /// A drop shadow filter.
     DropShadow(DropShadow),
+    /// A color matrix filter.
+    ColorMatrix(ColorMatrix),
 }
 
-impl PreparedFilter {
-    /// Build a new prepared filter for the given transform.
-    pub fn new(filter: &Filter, transform: &Affine) -> Self {
-        // Multi-primitive filter graphs are not yet implemented.
-        if filter.graph.primitives.len() != 1 {
-            unimplemented!("Multi-primitive filter graphs are not yet supported");
-        }
+/// The prepared primitives of a filter, in the order in which they need to be applied.
+///
+/// Each primitive takes the output of the previous one as its input; the first one operates on
+/// the rendered layer. An empty chain leaves the layer unchanged.
+pub type PreparedFilterChain = SmallVec<[PreparedFilter; 1]>;
 
-        match &filter.graph.primitives[0] {
+impl PreparedFilter {
+    /// Prepare all primitives of a filter for rendering with the given transform.
+    ///
+    /// Primitives that are not implemented yet are skipped, i.e. they act as identity.
+    pub fn chain(filter: &Filter, transform: &Affine) -> PreparedFilterChain {
+        filter
+            .graph
+            .primitives
+            .iter()
+            .filter_map(|primitive| Self::from_primitive(primitive, transform))
+            .collect()
+    }
+
+    /// Prepare a single filter primitive for rendering with the given transform.
+    ///
+    /// Returns `None` for primitives that are not implemented yet.
+    pub fn from_primitive(primitive: &FilterPrimitive, transform: &Affine) -> Option<Self> {
+        let prepared = match primitive {
             FilterPrimitive::Flood { color } => {
                 let flood = Flood::new(*color);
                 Self::Flood(flood)
@@ -96,12 +116,12 @@ impl PreparedFilter {
 
                 Self::Offset(offset)
             }
-            _ => {
-                // Other primitives like Blend, ColorMatrix, ComponentTransfer, etc.
-                // are not yet implemented
-                unimplemented!("Other filter primitives not yet implemented");
-            }
-        }
+            FilterPrimitive::ColorMatrix { matrix } => Self::ColorMatrix(ColorMatrix::new(*matrix)),
+            // Other primitives like Blend, ComponentTransfer, etc. are not yet implemented.
+            _ => return None,
+        };
+
+        Some(prepared)
     }
 }
 

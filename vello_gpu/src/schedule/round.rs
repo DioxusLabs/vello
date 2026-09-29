@@ -26,7 +26,7 @@
 
 use super::ScheduleBuffers;
 use crate::draw::{Draw, ExternalTextureRun};
-use crate::filter::GpuFilterData;
+use crate::filter::PreparedGpuFilterChain;
 use crate::target::{
     BlendPassBindings, DrawPassBindings, DrawPassTarget, FilterPassBindings, LayerTextureId,
     LayerTextureRegion, RootTarget, RoundBindings, TextureParity, TextureRegion,
@@ -504,15 +504,13 @@ impl FilterTextureRegions {
     }
 }
 
-/// A scheduled filter and the texture regions on which it operates.
+/// A scheduled filter chain and the texture regions on which it operates.
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct FilterOp {
     /// Original and temporary regions used by the filter passes.
     pub(crate) textures: FilterTextureRegions,
-    /// Texel offset of this filter's parameters in the filter data texture.
-    pub(crate) filter_data_offset: u32,
-    /// Prepared filter parameters used to select and size passes.
-    pub(crate) gpu_filter: GpuFilterData,
+    /// The encoded filters to apply, in order.
+    pub(crate) filters: PreparedGpuFilterChain,
 }
 
 /// A scheduled non-default blend between a parent and child layer.
@@ -538,13 +536,12 @@ mod tests {
         BlendOp, FilterOp, FilterTextureRegions, LayerStage, Round, RoundStage, Rounds,
         SchedulePoint,
     };
-    use crate::filter::GpuFilterData;
+    use crate::filter::PreparedGpuFilterChain;
     use crate::schedule::ScheduleBuffers;
     use crate::target::{
         LayerTextureId, LayerTextureRegion, RoundBindings, TextureParity, TextureRegion,
     };
     use crate::util::VecExt;
-    use bytemuck::Zeroable;
     use vello_common::geometry::RectU16;
     use vello_common::peniko::BlendMode;
 
@@ -566,14 +563,13 @@ mod tests {
         }
     }
 
-    fn filter_op(filter_data_offset: u32) -> FilterOp {
+    fn filter_op(filter_index: u32) -> FilterOp {
         FilterOp {
             textures: FilterTextureRegions::new(
                 region(TextureParity::Even, 0),
                 region(TextureParity::Odd, 0),
             ),
-            filter_data_offset,
-            gpu_filter: GpuFilterData::zeroed(),
+            filters: PreparedGpuFilterChain::new(filter_index..filter_index + 1, false),
         }
     }
 
@@ -835,13 +831,13 @@ mod tests {
             .filter_ops
             .ranged(&even_pass.filter_ranges)
             .iter()
-            .map(|op| op.filter_data_offset)
+            .map(|op| op.filters.range().start)
             .collect();
         let odd_offsets: alloc::vec::Vec<_> = buffers
             .filter_ops
             .ranged(&odd_pass.filter_ranges)
             .iter()
-            .map(|op| op.filter_data_offset)
+            .map(|op| op.filters.range().start)
             .collect();
 
         assert_eq!(even_offsets, [10, 30]);
