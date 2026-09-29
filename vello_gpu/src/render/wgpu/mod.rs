@@ -3013,19 +3013,24 @@ impl RendererContext<'_> {
         }
         let filter_pair_bind_groups = &self.programs.filter_pair_bind_groups[&bindings];
 
-        if let Some(copy_pass) = plan.copy_pass() {
-            encode_copy_pass(
-                self.device,
-                self.encoder,
-                &self.programs.copy_pipeline,
-                copy_pass,
-                &filter_pair_bind_groups.copy_source,
-                resources.scratch_view(),
-                "Filter Copy Pass",
-            );
-        }
+        for (step_index, step) in plan.steps().enumerate() {
+            if let Some(copy_pass) = step.copy_pass() {
+                encode_copy_pass(
+                    self.device,
+                    self.encoder,
+                    &self.programs.copy_pipeline,
+                    copy_pass,
+                    &filter_pair_bind_groups.copy_source,
+                    resources.scratch_view(),
+                    "Filter Copy Pass",
+                );
+            }
 
-        for (step_index, instances) in plan.steps().enumerate() {
+            let instances = step.filters();
+            if instances.is_empty() {
+                continue;
+            }
+
             let input = bindings.input(step_index);
             let output = bindings.output(step_index);
             encode_filter_pass(
