@@ -6,9 +6,12 @@
 //! Alpha textures store 16 1-byte alpha values per texel, with each color
 //! channel packing the 4 alpha values of a single strip column.
 
+// `alpha_col` is the strip's integer start column and `tex_coord` the offset from it within the strip,
+// so that large column indices do not pass through f32.
 fn sample_strip_alpha(
     alphas_texture: texture_2d<u32>,
     tex_width_bits: u32,
+    alpha_col: u32,
     tex_coord: vec2<f32>,
 ) -> f32 {
     let x = u32(floor(tex_coord.x));
@@ -18,7 +21,7 @@ fn sample_strip_alpha(
     // The code here assumes the strip height is 4, i.e., each color
     // channel encodes the alpha values for a single column within a strip.
     // Divide x by 4 to get the texel position.
-    let alphas_index = x;
+    let alphas_index = alpha_col + x;
     let alphas_tex_width = 1u << tex_width_bits;
     // Which texel contains the alpha values for this column
     let texel_index = alphas_index / 4u;

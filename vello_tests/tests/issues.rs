@@ -922,3 +922,27 @@ fn issue_image_bilinear_tap_rounding(ctx: &mut impl Renderer) {
     ctx.set_paint_transform(image_from_scene.inverse());
     ctx.fill_rect(&Rect::new(10.0, 10.0, 25.0, 90.0));
 }
+
+// https://github.com/linebender/vello/issues/2018
+// Past 2^23 alpha columns, f32 can no longer represent the column coordinate of a strip exactly,
+// so the GPU read the wrong alpha column.
+#[vello_test(width = 1100, height = 650, cpu_u8_tolerance = 8, gpu_tolerance = 4)]
+fn issue_gpu_strip_alpha_column_index_beyond_f32_range(ctx: &mut impl Renderer) {
+    // Each diagonal band adds about 1100 alpha columns. 17000 bands add about 18M columns, which is
+    // past 2^24.
+    let mut seed = 1_u64;
+    for _ in 0..17000 {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        let x = (seed >> 33) as f64 / (1_u64 << 31) as f64 * 1100.0;
+        let mut path = BezPath::new();
+        path.move_to((x, 0.0));
+        path.line_to((x + 1.5, 0.0));
+        path.line_to((x + 651.5, 650.0));
+        path.line_to((x + 650.0, 650.0));
+        path.close_path();
+        ctx.set_paint(Color::from_rgba8(200, 120, 60, 200));
+        ctx.fill_path(&path);
+    }
+}

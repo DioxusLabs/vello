@@ -31,6 +31,8 @@ struct VertexOutput {
     @interpolate(flat)
     @location(4) blend_config: u32,
     @location(5) tex_coord: vec2<f32>,
+    @interpolate(flat)
+    @location(6) alpha_col: u32,
     @builtin(position) position: vec4<f32>,
 }
 
@@ -59,10 +61,8 @@ fn vs_main(@builtin(vertex_index) vertex_index: u32, instance: BlendInstance) ->
     out.child_local = child_local;
     out.child_rect_size = instance.child_rect_size;
     out.blend_config = instance.blend_config;
-    out.tex_coord = vec2<f32>(
-            f32(instance.geometry_alpha_col_idx) + corner.x * geometry_size.x,
-            corner.y * geometry_size.y,
-        );
+    out.alpha_col = instance.geometry_alpha_col_idx;
+    out.tex_coord = corner * geometry_size;
 
     let ndc = pixel_to_ndc(parent_texture_xy, vec2<f32>(parent_texture_size));
     out.position = vec4<f32>(ndc, 0.0, 1.0);
@@ -87,6 +87,8 @@ fn fs_main(
     @interpolate(flat)
     @location(4) blend_config: u32,
     @location(5) tex_coord: vec2<f32>,
+    @interpolate(flat)
+    @location(6) alpha_col: u32,
 ) -> @location(0) vec4<f32> {
     let child_rect_size = unpack_u16_pair(packed_child_rect_size);
     let compose = blend_config & 0xffu;
@@ -100,7 +102,7 @@ fn fs_main(
 
     // We are blending with a clip path, sample the alpha value.
     if (has_alpha) != 0u {
-        let alpha_index = u32(floor(tex_coord.x));
+        let alpha_index = alpha_col + u32(floor(tex_coord.x));
         let y = u32(floor(tex_coord.y));
         let texel_index = alpha_index / 4u;
         let channel_index = alpha_index % 4u;

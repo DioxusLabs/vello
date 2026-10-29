@@ -184,7 +184,7 @@ struct VertexOutput {
     // Render type for the strip
     @interpolate(flat)
     @location(0) paint_and_rect_flag: u32,
-    // Texture coordinates for the current fragment
+    // Texture coordinates for the current fragment, relative to the strip's first column
     @location(1) tex_coord: vec2<f32>,
     // Image sampling coordinates or gradient-space position for the current fragment
     @location(2) sample_xy: vec2<f32>,
@@ -200,6 +200,10 @@ struct VertexOutput {
     // Zero for normal strips.
     @interpolate(flat)
     @location(5) rect_frac: u32,
+    // Alpha texture column index where the strip's alpha values begin.
+    // Kept as an integer: as f32 it loses precision past 2^23 columns.
+    @interpolate(flat)
+    @location(6) alpha_col: u32,
     // Normalized device coordinates (NDC) for the current vertex
     @builtin(position) position: vec4<f32>,
 }
@@ -359,8 +363,8 @@ fn vs_main(@builtin(vertex_index) in_vertex_index: u32, instance: StripInstance)
         out.sample_xy = vec2<f32>(f32(source.x) + x * f32(width), f32(source.y) + y * f32(height));
     }
 
-    let col_offset = select(f32(instance.col_idx_or_rect_frac), 0.0, is_rect);
-    out.tex_coord = vec2<f32>(col_offset + x * f32(width), y * f32(height));
+    out.alpha_col = select(instance.col_idx_or_rect_frac, 0u, is_rect);
+    out.tex_coord = vec2<f32>(x * f32(width), y * f32(height));
 
     // Divide by a power of 2 to ensure exact f32 arithmetic (and divide by the expected depth
     // buffer precision of 24 bits).
@@ -391,6 +395,8 @@ fn fs_main(
     @location(4) payload: u32,
     @interpolate(flat)
     @location(5) rect_frac: u32,
+    @interpolate(flat)
+    @location(6) alpha_col: u32,
     @builtin(position) position: vec4<f32>,
 ) -> @location(0) vec4<f32> {
     var alpha = 1.0;
@@ -398,7 +404,12 @@ fn fs_main(
     if is_rect && rect_frac != 0u {
         alpha = rect_coverage(dense_end_or_rect_size, rect_frac, tex_coord);
     } else if !is_rect && dense_end_or_rect_size != 0u {
-        alpha = sample_strip_alpha(alphas_texture, config.alphas_tex_width_bits, tex_coord);
+        alpha = sample_strip_alpha(
+                alphas_texture,
+                config.alphas_tex_width_bits,
+                alpha_col,
+                tex_coord,
+            );
     }
     let color_source = (paint_and_rect_flag >> 29u) & 0x3u;
     var final_color: vec4<f32>;
