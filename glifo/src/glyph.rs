@@ -641,6 +641,10 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
                         None
                     }
                     BitmapData::Mask(ref mask) => {
+                        // Monochrome strikes are hinting aids; prefer scalable outlines.
+                        if outlines.get(glyph_id).is_some() {
+                            return None;
+                        }
                         let width = g.width;
                         let height = g.height;
                         if let Ok(data) = mask.decode(width, height) {
