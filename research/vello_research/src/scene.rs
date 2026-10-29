@@ -658,6 +658,7 @@ impl<'a> DrawGlyphs<'a> {
 
         let color_collection = font.color_glyphs();
         let bitmaps = font.bitmap_strikes();
+        let outlines = font.outline_glyphs();
         let is_apple_color_emoji = bitmaps.format() == Some(BitmapFormat::Sbix)
             && font
                 .localized_strings(skrifa::string::StringId::POSTSCRIPT_NAME)
@@ -680,6 +681,14 @@ impl<'a> DrawGlyphs<'a> {
                         false
                     }
                     None => match bitmaps.glyph_for_size(Size::new(ppem), glyph_id) {
+                        // Monochrome/grayscale strikes (e.g. EBDT in Calibri) are hinting aids
+                        // for exact pixel sizes; prefer the outline when the glyph has one.
+                        Some(bitmap)
+                            if matches!(bitmap.data, bitmap::BitmapData::Mask(_))
+                                && outlines.get(glyph_id).is_some() =>
+                        {
+                            true
+                        }
                         Some(bitmap) => {
                             final_glyph = Some((EmojiLikeGlyph::Bitmap(bitmap), *glyph));
                             false
