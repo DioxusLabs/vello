@@ -1731,15 +1731,21 @@ fn prepare_glyph_run<'a>(run: GlyphRun<'a>, hint_cache: &'a mut HintCache) -> Pr
         ),
         PreparedGlyphRunMode::AbsorbScaleHinted => {
             let vertical_font_size = run.font_size * t_d as f32;
-            let font_ref = run.font.as_skrifa();
-            let outlines = font_ref.outline_glyphs();
-            let hinting_instance = hint_cache.get(&HintKey {
-                font_id: run.font.data.id(),
-                font_index: run.font.index,
-                outlines: &outlines,
-                size: vertical_font_size,
-                coords: run.normalized_coords,
-            });
+            // Hinted outlines at size 0 can be a pixel or two wide, so draw them unhinted,
+            // which scales them down to nothing.
+            let hinting_instance = if vertical_font_size == 0.0 {
+                None
+            } else {
+                let font_ref = run.font.as_skrifa();
+                let outlines = font_ref.outline_glyphs();
+                hint_cache.get(&HintKey {
+                    font_id: run.font.data.id(),
+                    font_index: run.font.index,
+                    outlines: &outlines,
+                    size: vertical_font_size,
+                    coords: run.normalized_coords,
+                })
+            };
 
             (
                 // The scale has been absorbed into the font size, so we need to remove it from the skew
@@ -2618,6 +2624,30 @@ mod tests {
                 skipped_count: 1,
             })
         );
+    }
+
+    #[test]
+    fn zero_size_glyph_run_is_not_hinted() {
+        let font = test_font(TestGlyphKind::Outline);
+        let mut hint_cache = HintCache::default();
+        let mut hinted = |font_size: f32| {
+            let run = GlyphRun {
+                font: font.clone(),
+                font_size,
+                font_embolden: FontEmbolden::default(),
+                transform: Affine::scale(2.0),
+                scene_paint_transform: Affine::IDENTITY,
+                glyph_transform: None,
+                normalized_coords: &[],
+                hint: true,
+            };
+            prepare_glyph_run(run, &mut hint_cache)
+                .hinting_instance
+                .is_some()
+        };
+
+        assert!(hinted(16.0));
+        assert!(!hinted(0.0));
     }
 
     #[test]
