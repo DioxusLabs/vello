@@ -232,19 +232,19 @@ impl<'a> GpuGlyphRunBackend<'a> {
     where
         Glyphs: Iterator<Item = Glyph> + Clone,
     {
+        self.resources.ensure_glyph_resources();
+        let glyph_resources = self
+            .resources
+            .glyph_resources
+            .as_mut()
+            .expect("glyph atlas resources must exist after initialization");
+        let glyph_atlas = &mut glyph_resources.glyph_atlas;
+        let image_cache = &mut self.resources.image_cache;
+        // Vello GPU can't paint pixmap images, so bitmap glyphs always go through the atlas.
         let atlas_cacher = if self.atlas_cache_enabled {
-            self.resources.ensure_glyph_resources();
-            let glyph_resources = self
-                .resources
-                .glyph_resources
-                .as_mut()
-                .expect("glyph atlas resources must exist after initialization");
-            AtlasCacher::Enabled(
-                &mut glyph_resources.glyph_atlas,
-                &mut self.resources.image_cache,
-            )
+            AtlasCacher::Enabled(glyph_atlas, image_cache)
         } else {
-            AtlasCacher::Disabled
+            AtlasCacher::BitmapsOnly(glyph_atlas, image_cache)
         };
 
         let mut glyph_run = run.build(

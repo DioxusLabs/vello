@@ -330,20 +330,30 @@ pub enum AtlasCacher<'a> {
     /// Enable atlas-backed caching using the provided glyph atlas and image
     /// allocator.
     Enabled(&'a mut GlyphAtlas, &'a mut ImageCache),
+    /// Draw outline and COLR glyphs directly, but draw bitmap glyphs through the
+    /// atlas, whatever their size or transform.
+    ///
+    /// For backends that cannot paint [`ImageSource::Pixmap`](vello_common::paint::ImageSource::Pixmap)
+    /// images, such as Vello GPU. Bitmap glyphs that cannot be inserted into the atlas are skipped.
+    BitmapsOnly(&'a mut GlyphAtlas, &'a mut ImageCache),
 }
 
 impl AtlasCacher<'_> {
     fn config(&self) -> Option<&crate::atlas::GlyphCacheConfig> {
         match self {
             Self::Disabled => None,
-            Self::Enabled(glyph_atlas, _) => Some(glyph_atlas.config()),
+            Self::Enabled(glyph_atlas, _) | Self::BitmapsOnly(glyph_atlas, _) => {
+                Some(glyph_atlas.config())
+            }
         }
     }
 
     fn get(&mut self, key: &GlyphCacheKey) -> Option<AtlasSlot> {
         match self {
             Self::Disabled => None,
-            Self::Enabled(glyph_atlas, _) => glyph_atlas.get(key),
+            Self::Enabled(glyph_atlas, _) | Self::BitmapsOnly(glyph_atlas, _) => {
+                glyph_atlas.get(key)
+            }
         }
     }
 }
@@ -462,11 +472,14 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
 
         let hinted = hinting_instance.is_some();
 
-        let colr_bitmap_cache_enabled = self
-            .atlas_cacher
-            .config()
-            .is_some_and(|config| draw_props.font_size <= config.max_cached_font_size);
-        let outline_cache_enabled = colr_bitmap_cache_enabled
+        let colr_cache_enabled = matches!(self.atlas_cacher, AtlasCacher::Enabled(..))
+            && self
+                .atlas_cacher
+                .config()
+                .is_some_and(|config| draw_props.font_size <= config.max_cached_font_size);
+        let bitmap_cache_enabled =
+            colr_cache_enabled || matches!(self.atlas_cacher, AtlasCacher::BitmapsOnly(..));
+        let outline_cache_enabled = colr_cache_enabled
             // Due to the various parameters that would need to be considered in the cache key,
             // we never cache stroked outlines for now. For COLR and bitmap, this doesn't matter
             // because they are always filled anyway.
@@ -548,7 +561,7 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
 
                 // COLR glyphs are never hinted and have no sub-pixel offset;
                 // context_color is part of the key because it affects painted layers.
-                let cache_key = colr_bitmap_cache_enabled.then(|| GlyphCacheKey {
+                let cache_key = colr_cache_enabled.then(|| GlyphCacheKey {
                     font_id: font_info.id,
                     font_index: font_info.index,
                     glyph_id: glyph.id,
@@ -658,7 +671,7 @@ impl<'a, 'b, Glyphs: Iterator<Item = Glyph> + Clone> GlyphRunRenderer<'a, 'b, Gl
 
                 // Bitmaps are not hinted and have no sub-pixel offset or
                 // context color; variation coords are irrelevant for fixed strikes.
-                let cache_key = colr_bitmap_cache_enabled.then(|| GlyphCacheKey {
+                let cache_key = bitmap_cache_enabled.then(|| GlyphCacheKey {
                     font_id: font_info.id,
                     font_index: font_info.index,
                     glyph_id: glyph.id,
