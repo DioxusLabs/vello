@@ -46,7 +46,10 @@ pub(crate) fn fill_glyph(
     atlas_cacher: &mut AtlasCacher<'_>,
     outline_cache: &mut OutlineCacheSession<'_>,
 ) {
-    let AtlasCacher::Enabled(glyph_atlas, image_cache) = atlas_cacher else {
+    let bitmaps_only = matches!(atlas_cacher, AtlasCacher::BitmapsOnly(..));
+    let (AtlasCacher::Enabled(glyph_atlas, image_cache)
+    | AtlasCacher::BitmapsOnly(glyph_atlas, image_cache)) = atlas_cacher
+    else {
         let transform = prepared_glyph.outline_transform;
         let paint_transform = prepared_glyph.relative_paint_transform;
 
@@ -112,12 +115,15 @@ pub(crate) fn fill_glyph(
                     key,
                     glyph_atlas,
                     image_cache,
+                    bitmaps_only,
                 )
             {
                 return;
             }
 
-            render_uncached_bitmap_glyph(renderer, glyph, transform);
+            if !bitmaps_only {
+                render_uncached_bitmap_glyph(renderer, glyph, transform);
+            }
         }
         GlyphType::Colr(glyph) => {
             if let Some(key) = cache_key.take()
@@ -148,7 +154,9 @@ pub(crate) fn stroke_glyph(
     atlas_cacher: &mut AtlasCacher<'_>,
     outline_cache: &mut OutlineCacheSession<'_>,
 ) {
-    let AtlasCacher::Enabled(glyph_atlas, image_cache) = atlas_cacher else {
+    let (AtlasCacher::Enabled(glyph_atlas, image_cache)
+    | AtlasCacher::BitmapsOnly(glyph_atlas, image_cache)) = atlas_cacher
+    else {
         let outline_transform = prepared_glyph.outline_transform;
         let paint_transform = prepared_glyph.relative_paint_transform;
         return match prepared_glyph.glyph_type {
@@ -436,8 +444,9 @@ fn insert_and_render_bitmap(
     cache_key: GlyphCacheKey,
     glyph_atlas: &mut GlyphAtlas,
     image_cache: &mut ImageCache,
+    any_transform: bool,
 ) -> CacheResult {
-    if !supports_atlas_caching(&transform, CachedGlyphType::Bitmap) {
+    if !any_transform && !supports_atlas_caching(&transform, CachedGlyphType::Bitmap) {
         return CacheResult::UnsupportedTransform;
     }
 
