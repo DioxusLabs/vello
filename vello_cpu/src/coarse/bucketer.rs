@@ -389,6 +389,7 @@ impl CommandBucketer {
             // since they aren't shifted and also only work if the mask has the same dimensions as
             // our allocated filter layer.
             mask: props.mask.clone(),
+            luminance_mask: props.luminance_mask,
             blend_mode: props.blend_mode,
             opacity: props.opacity,
             clip: props.clip_path.clone(),
@@ -431,6 +432,7 @@ impl CommandBucketer {
                 blend_mode,
                 opacity,
                 mask: layer.mask.clone(),
+                luminance_mask: layer.luminance_mask,
                 draw_id,
                 thread_idx: clip.thread_idx,
             });
@@ -492,6 +494,7 @@ impl CommandBucketer {
                 blend_mode,
                 opacity,
                 mask: layer.mask.clone(),
+                luminance_mask: layer.luminance_mask,
                 draw_id,
                 thread_idx: 0,
             });
@@ -744,6 +747,7 @@ impl CommandBucketer {
 #[derive(Debug, Clone)]
 pub(crate) struct ActiveLayer {
     pub(crate) mask: Option<Mask>,
+    pub(crate) luminance_mask: bool,
     pub(crate) blend_mode: BlendMode,
     pub(crate) opacity: f32,
     pub(crate) clip: Option<LayerClip>,
@@ -802,6 +806,7 @@ mod tests {
             blend_mode: BlendMode::default(),
             opacity: 1.0,
             mask: None,
+            luminance_mask: false,
             clip_path: None,
         }
     }
@@ -811,6 +816,7 @@ mod tests {
             blend_mode: BlendMode::default(),
             opacity: 1.0,
             mask: None,
+            luminance_mask: false,
             clip_path: Some(LayerClip {
                 strip_range: 0..0,
                 thread_idx: 0,
@@ -834,6 +840,7 @@ mod tests {
             blend_mode: BlendMode::default(),
             opacity: 1.0,
             mask: None,
+            luminance_mask: false,
             clip_path: Some(LayerClip {
                 strip_range,
                 thread_idx: 0,

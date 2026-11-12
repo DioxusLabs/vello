@@ -796,6 +796,7 @@ impl Scene {
                 blend_mode,
                 opacity: opacity.unwrap_or(1.0),
                 mask: None,
+                luminance_mask: false,
                 clip_path,
             },
             filter_data,

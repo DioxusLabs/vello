@@ -391,6 +391,10 @@ pub trait FineKernel<S: Simd>: Send + Sync + 'static {
     /// effectively masking out or reducing the opacity of pixels.
     fn apply_mask(simd: S, dest: &mut [Self::Numeric], src: impl Iterator<Item = Self::NumericVec>);
 
+    /// Replace the alpha of each premultiplied pixel with the luminance of its color, using the
+    /// same coefficients as [`Mask::new_luminance`].
+    fn luminance_to_alpha(simd: S, dest: &mut [Self::Numeric]);
+
     /// Apply a painter to render content into the destination buffer.
     ///
     /// Invokes the painter to generate pixel values and writes them to the destination.
@@ -504,7 +508,7 @@ pub(crate) fn rasterize_region<S: Simd, T: FineKernel<S>>(
     }
 
     if isolate_bg {
-        fine.layer_fill(scene_y, span, BlendMode::default(), 1.0, None, None);
+        fine.layer_fill(scene_y, span, BlendMode::default(), 1.0, None, false, None);
         fine.pop_buf();
     }
 
@@ -759,6 +763,7 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
                         attrs.blend_mode,
                         attrs.opacity,
                         attrs.mask.as_ref(),
+                        attrs.luminance_mask,
                         alphas,
                     );
                 };
@@ -832,6 +837,7 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
         blend_mode: BlendMode,
         opacity: f32,
         mask: Option<&Mask>,
+        luminance_mask: bool,
         alphas: Option<&[u8]>,
     ) {
         if opacity != 1.0 {
@@ -839,6 +845,10 @@ impl<S: Simd, T: FineKernel<S>> Fine<S, T> {
         }
         if let Some(mask) = mask {
             self.mask(row_y, span, mask);
+        }
+        if luminance_mask {
+            let source = self.blend_buffers.last_mut().unwrap();
+            T::luminance_to_alpha(self.simd, &mut source[Self::scratch_range(span)]);
         }
 
         let x = span.pixel_x();
