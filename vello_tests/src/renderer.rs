@@ -74,6 +74,7 @@ pub trait Renderer: Sized {
     fn push_blend_layer(&mut self, blend_mode: BlendMode);
     fn push_opacity_layer(&mut self, opacity: f32);
     fn push_mask_layer(&mut self, mask: Mask);
+    fn push_luminance_mask_layer(&mut self, clip_path: Option<&BezPath>, opacity: f32);
     fn push_filter_layer(&mut self, filter: Filter);
     fn pop_layer(&mut self);
     fn pop_clip(&mut self);
@@ -191,6 +192,10 @@ impl Renderer for CpuRenderer {
 
     fn push_mask_layer(&mut self, mask: Mask) {
         self.ctx.push_mask_layer(mask);
+    }
+
+    fn push_luminance_mask_layer(&mut self, clip_path: Option<&BezPath>, opacity: f32) {
+        self.ctx.push_luminance_mask_layer(clip_path, opacity);
     }
 
     fn push_filter_layer(&mut self, filter: Filter) {
@@ -530,6 +535,10 @@ impl Renderer for GpuRenderer {
 
     fn push_mask_layer(&mut self, mask: Mask) {
         self.scene.push_mask_layer(mask);
+    }
+
+    fn push_luminance_mask_layer(&mut self, _: Option<&BezPath>, _: f32) {
+        unimplemented!()
     }
 
     fn push_filter_layer(&mut self, filter: Filter) {
@@ -921,6 +930,10 @@ impl Renderer for GpuRenderer {
     }
 
     fn push_mask_layer(&mut self, _: Mask) {
+        unimplemented!()
+    }
+
+    fn push_luminance_mask_layer(&mut self, _: Option<&BezPath>, _: f32) {
         unimplemented!()
     }
 

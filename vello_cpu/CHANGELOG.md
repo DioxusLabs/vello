@@ -12,6 +12,10 @@ Subheadings to categorize changes are `added, changed, deprecated, removed, fixe
 
 This release has an [MSRV][] of 1.89.
 
+### Added
+
+- `RenderContext::push_luminance_mask_layer`, which uses the luminance of the content drawn into the layer as a mask for the content below it, without pre-rasterizing a `Mask`. ([#XXXX][] by [@nicoburns][])
+
 ## [0.2.0][] - 2026-08-07
 
 This release has an [MSRV][] of 1.88.

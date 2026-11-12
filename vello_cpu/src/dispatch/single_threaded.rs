@@ -365,6 +365,7 @@ impl Dispatcher for SingleThreadedDispatcher {
         opacity: f32,
         aliasing_threshold: Option<u8>,
         mask: Option<Mask>,
+        luminance_mask: bool,
         filter_data: Option<FilterData>,
     ) {
         if let Some(filter_data) = &filter_data {
@@ -400,6 +401,7 @@ impl Dispatcher for SingleThreadedDispatcher {
                 blend_mode,
                 opacity,
                 mask,
+                luminance_mask,
                 clip_path,
             },
             filter_data,

@@ -99,6 +99,18 @@ impl<S: Simd> FineKernel<S> for F32Kernel {
         );
     }
 
+    fn luminance_to_alpha(simd: S, dest: &mut [Self::Numeric]) {
+        simd.vectorize(
+            #[inline(always)]
+            || {
+                for px in dest.chunks_exact_mut(4) {
+                    let luma = px[0] * 0.2126 + px[1] * 0.7152 + px[2] * 0.0722;
+                    px[3] = luma.min(1.0);
+                }
+            },
+        );
+    }
+
     /// Applies a painter's output to the destination buffer.
     ///
     /// Delegates to the painter's f32-specific implementation.

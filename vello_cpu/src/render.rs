@@ -508,6 +508,18 @@ impl RenderContext {
         mask: Option<Mask>,
         filter: Option<Filter>,
     ) {
+        self.push_layer_inner(clip_path, blend_mode, opacity, mask, filter, false);
+    }
+
+    fn push_layer_inner(
+        &mut self,
+        clip_path: Option<&BezPath>,
+        blend_mode: Option<BlendMode>,
+        opacity: Option<f32>,
+        mask: Option<Mask>,
+        filter: Option<Filter>,
+        luminance_mask: bool,
+    ) {
         let mask = mask.and_then(|m| {
             if m.width() != self.width || m.height() != self.height {
                 None
@@ -543,6 +555,7 @@ impl RenderContext {
             opacity,
             self.aliasing_threshold,
             mask,
+            luminance_mask,
             filter_data,
         );
     }
@@ -573,6 +586,33 @@ impl RenderContext {
     /// example for how this method differs from `set_mask`.
     pub fn push_mask_layer(&mut self, mask: Mask) {
         self.push_layer(None, None, None, Some(mask), None);
+    }
+
+    /// Push a new luminance mask layer, optionally clipped by `clip_path`.
+    ///
+    /// Content drawn until the matching [`pop_layer`](Self::pop_layer) call is a luminance mask
+    /// for the content drawn before it in the enclosing layer: when the layer is popped, each
+    /// pixel of the enclosing layer is multiplied by `opacity` times the luminance of the mask
+    /// content's premultiplied color at that pixel (the same luminance as
+    /// [`Mask::new_luminance`]).
+    ///
+    /// As with a layer using [`Compose::DestIn`], content of the enclosing layer inside of the
+    /// clip path where no mask content was drawn is removed, while content outside of the clip
+    /// path is left unchanged. Without a clip path, the whole enclosing layer is masked.
+    ///
+    /// [`Compose::DestIn`]: crate::peniko::Compose::DestIn
+    pub fn push_luminance_mask_layer(&mut self, clip_path: Option<&BezPath>, opacity: f32) {
+        self.push_layer_inner(
+            clip_path,
+            Some(BlendMode::new(
+                crate::peniko::Mix::Normal,
+                crate::peniko::Compose::DestIn,
+            )),
+            Some(opacity),
+            None,
+            None,
+            true,
+        );
     }
 
     /// Push a filter layer that affects all subsequent drawing operations.

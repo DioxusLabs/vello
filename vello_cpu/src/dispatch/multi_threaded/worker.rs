@@ -169,6 +169,7 @@ impl Worker {
                     blend_mode,
                     opacity,
                     mask,
+                    luminance_mask,
                     fill_rule,
                     aliasing_threshold,
                 } => {
@@ -204,6 +205,7 @@ impl Worker {
                         clip_bbox,
                         blend_mode,
                         mask,
+                        luminance_mask,
                         opacity,
                     };
 

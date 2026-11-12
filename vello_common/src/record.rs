@@ -108,6 +108,12 @@ pub struct LayerProps {
     pub opacity: f32,
     /// Optional mask applied when compositing the layer.
     pub mask: Option<Mask>,
+    /// Whether the layer is a luminance mask layer: when compositing, the luminance of its
+    /// premultiplied content replaces its alpha, so with [`Compose::DestIn`] it masks the
+    /// backdrop.
+    ///
+    /// [`Compose::DestIn`]: crate::peniko::Compose::DestIn
+    pub luminance_mask: bool,
     /// Optional clip path applied when compositing the layer.
     pub clip_path: Option<LayerClip>,
 }
@@ -514,6 +520,7 @@ mod tests {
             blend_mode: BlendMode::default(),
             opacity: 1.0,
             mask: None,
+            luminance_mask: false,
             clip_path: None,
         }
     }
