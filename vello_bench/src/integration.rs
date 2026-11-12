@@ -11,7 +11,6 @@ use vello_common::color::DynamicColor;
 use vello_common::color::palette::css::{BLACK, WHITE};
 use vello_common::color::{AlphaColor, Srgb};
 use vello_common::kurbo::{Affine, Point, Rect, Shape};
-use vello_common::mask::Mask;
 use vello_common::paint::{Image, ImageSource};
 use vello_common::peniko::{BlendMode, Compose, ImageSampler, Mix};
 use vello_common::peniko::{ColorStop, ColorStops, Gradient, LinearGradientPosition};
@@ -79,13 +78,9 @@ enum MaskKind {
     None,
     Alpha,
     Luminance,
-    /// The approach of rendering each luminance mask into a full-size pixmap and converting it
-    /// with [`Mask::new_luminance`].
-    FullSizeLuminance,
 }
 
-/// Many small luminance-masked shapes on a large canvas, compared with alpha masks and with
-/// pre-rasterizing full-size luminance masks.
+/// Many small luminance-masked shapes on a large canvas, compared with alpha masks.
 pub fn masks(c: &mut Criterion) {
     const WIDTH: u16 = 1600;
     const HEIGHT: u16 = 1200;
@@ -140,19 +135,6 @@ pub fn masks(c: &mut Criterion) {
                     ctx.fill_rect(&rect);
                     ctx.pop_layer();
                 }
-                MaskKind::FullSizeLuminance => {
-                    let mut mask_ctx = RenderContext::new(WIDTH, HEIGHT);
-                    let mut mask_pixmap = Pixmap::new(WIDTH, HEIGHT);
-                    mask_ctx.set_paint(gradient);
-                    mask_ctx.fill_rect(&rect);
-                    mask_ctx.flush();
-                    mask_ctx.render(&mut mask_pixmap, &mut Resources::default());
-                    let mask = Mask::new_luminance(&mask_pixmap);
-                    ctx.push_layer(None, Some(dest_in), None, Some(mask), None);
-                    ctx.set_paint(WHITE);
-                    ctx.fill_rect(&rect);
-                    ctx.pop_layer();
-                }
             }
             ctx.pop_layer();
         }
@@ -162,7 +144,6 @@ pub fn masks(c: &mut Criterion) {
         ("no_mask", MaskKind::None),
         ("alpha", MaskKind::Alpha),
         ("luminance", MaskKind::Luminance),
-        ("full_size_luminance", MaskKind::FullSizeLuminance),
     ] {
         g.bench_function(name, |b| {
             let mut renderer = RenderContext::new(WIDTH, HEIGHT);
