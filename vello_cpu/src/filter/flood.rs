@@ -29,7 +29,7 @@ mod tests {
     #[test]
     fn test_flood_semi_transparent_lowp() {
         let mut pixmap = Pixmap::new(2, 2);
-        let mut filter_scratch = ScratchBuffer::new();
+        let mut filter_scratch = ScratchBuffer::default();
 
         // Semi-transparent white (50% alpha)
         let color = AlphaColor {
@@ -60,7 +60,7 @@ mod tests {
     #[test]
     fn test_flood_semi_transparent_highp() {
         let mut pixmap = Pixmap::new(2, 2);
-        let mut filter_scratch = ScratchBuffer::new();
+        let mut filter_scratch = ScratchBuffer::default();
 
         // Semi-transparent white (50% alpha)
         let color = AlphaColor {

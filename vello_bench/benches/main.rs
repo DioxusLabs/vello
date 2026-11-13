@@ -25,6 +25,7 @@ criterion_group!(render_rect, strip::render_rect);
 criterion_group!(glyph, glyph::glyph);
 criterion_group!(sort_tiles, sort::sort);
 criterion_group!(integration_bench, integration::images);
+criterion_group!(filters_bench, integration::filters);
 criterion_main!(
     pixmap_bench,
     allocator_bench,
@@ -43,5 +44,6 @@ criterion_main!(
     fine_blend,
     fine_image,
     sort_tiles,
-    integration_bench
+    integration_bench,
+    filters_bench
 );

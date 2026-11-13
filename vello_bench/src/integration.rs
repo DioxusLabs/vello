@@ -6,6 +6,8 @@
 use std::sync::Arc;
 
 use criterion::Criterion;
+use vello_common::color::palette::css::{REBECCA_PURPLE, WHITE};
+use vello_common::filter_effects::{EdgeMode, Filter, FilterPrimitive};
 use vello_common::kurbo::{Affine, Rect};
 use vello_common::paint::{Image, ImageSource};
 use vello_common::peniko::ImageSampler;
@@ -64,6 +66,61 @@ pub fn images(c: &mut Criterion) {
             std::hint::black_box(&pixmap);
         });
     });
+
+    g.finish();
+}
+
+/// Many small gaussian-blurred rectangles on a large canvas.
+pub fn filters(c: &mut Criterion) {
+    const WIDTH: u16 = 1600;
+    const HEIGHT: u16 = 1200;
+    const COLUMNS: usize = 20;
+    const ROWS: usize = 15;
+    const SIZE: f64 = 60.0;
+
+    let mut g = c.benchmark_group("filters");
+
+    let draw = |ctx: &mut RenderContext, std_deviation: Option<f32>| {
+        ctx.set_paint(WHITE);
+        ctx.fill_rect(&Rect::new(0.0, 0.0, f64::from(WIDTH), f64::from(HEIGHT)));
+        ctx.set_paint(REBECCA_PURPLE);
+
+        for i in 0..COLUMNS * ROWS {
+            let x = 20.0 + (i % COLUMNS) as f64 * 78.0;
+            let y = 20.0 + (i / COLUMNS) as f64 * 78.0;
+            if let Some(std_deviation) = std_deviation {
+                ctx.push_filter_layer(Filter::from_primitive(FilterPrimitive::GaussianBlur {
+                    std_deviation,
+                    edge_mode: EdgeMode::None,
+                }));
+            }
+            ctx.fill_rect(&Rect::new(x, y, x + SIZE, y + SIZE));
+            if std_deviation.is_some() {
+                ctx.pop_layer();
+            }
+        }
+    };
+
+    for (name, std_deviation) in [
+        ("no_filter", None),
+        ("blur_sigma_2", Some(2.0)),
+        ("blur_sigma_4", Some(4.0)),
+        ("blur_sigma_8", Some(8.0)),
+    ] {
+        g.bench_function(name, |b| {
+            let mut renderer = RenderContext::new(WIDTH, HEIGHT);
+            let mut resources = Resources::default();
+            let mut pixmap = Pixmap::new(WIDTH, HEIGHT);
+
+            b.iter(|| {
+                renderer.reset();
+                draw(&mut renderer, std_deviation);
+                renderer.flush();
+                renderer.render(&mut pixmap, &mut resources);
+                std::hint::black_box(&pixmap);
+            });
+        });
+    }
 
     g.finish();
 }

@@ -30,7 +30,7 @@ mod tests {
 
     #[test]
     fn offset_moves_pixels_and_clears_uncovered_area() {
-        let mut filter_scratch = ScratchBuffer::new();
+        let mut filter_scratch = ScratchBuffer::default();
         let mut pixmap = Pixmap::new(4, 3);
         pixmap.set_pixel(1, 1, PremulRgba8::from_u32(0xff_00_00_ff)); // premul red, opaque
 

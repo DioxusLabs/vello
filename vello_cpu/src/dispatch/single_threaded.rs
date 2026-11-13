@@ -224,7 +224,7 @@ impl SingleThreadedDispatcher {
         image_resolver: &dyn ImageResolver,
     ) -> FilterContext {
         // TODO: Reuse across frames so that pixmaps can be reused.
-        let mut filter_ctx = FilterContext::new(self.recorder.layers.len());
+        let mut filter_ctx = FilterContext::new(self.recorder.layers.len(), simd.level());
         // We record filter layers upon "push", so nested filter layers get added after their
         // parents. Subsequent sibling filter layers also get added after the previous layer they
         // are composited into. Therefore, iterating in reverse order is enough to ensure that all
