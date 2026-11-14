@@ -4,7 +4,6 @@
 //! Tests for GitHub issues.
 
 use crate::renderer::Renderer;
-use crate::util::layout_glyphs_noto_cbtf;
 use crate::util::stops_blue_green_red_yellow;
 use std::sync::Arc;
 use vello_common::color::PremulRgba8;
@@ -496,6 +495,30 @@ fn multi_threading_oob_access() {
     );
 }
 
+/// See <https://github.com/linebender/vello/issues/2026>.
+#[test]
+fn lowp_src_over_partial_coverage_keeps_opaque_alpha() {
+    let mut ctx = RenderContext::new(1, 1);
+    let mut resources = vello_cpu::Resources::new();
+    let mut pixmap = Pixmap::new(1, 1);
+
+    ctx.set_paint(Color::WHITE);
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 1.0, 1.0));
+    ctx.set_paint(BLACK.with_alpha(1.0 / 255.0));
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 0.5, 1.0));
+    ctx.flush();
+    ctx.render_with(
+        &mut pixmap,
+        &mut resources,
+        RasterizerSettings {
+            render_mode: RenderMode::OptimizeSpeed,
+            ..Default::default()
+        },
+    );
+
+    assert_eq!(pixmap.data()[0].a, 255);
+}
+
 /// See <https://github.com/linebender/vello/issues/1181>.
 #[vello_test(width = 556, height = 8)]
 fn tile_clamped_off_by_one(ctx: &mut impl Renderer) {
@@ -696,10 +719,7 @@ fn opaque_rect_partially_occluding_aa_edge(ctx: &mut impl Renderer) {
 
 #[vello_test(skip_multithreaded, width = 768, height = 100, gpu_tolerance = 4)]
 fn issue_1509(ctx: &mut impl Renderer) {
-    let filter = Filter::from_primitive(FilterPrimitive::GaussianBlur {
-        std_deviation: 25.0,
-        edge_mode: EdgeMode::None,
-    });
+    let filter = Filter::from_primitive(FilterPrimitive::gaussian_blur(25.0, EdgeMode::None));
     let rect = Rect::new(100.0, 10.0, 668.0, 90.0);
 
     ctx.push_filter_layer(filter);
@@ -800,19 +820,26 @@ fn issue_1707_transparent_solid_fill(ctx: &mut impl Renderer) {
     ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
 }
 
-#[vello_test(width = 32, height = 32, skip_gpu, cpu_u8_tolerance = 1)]
+#[vello_test(skip_gpu, cpu_u8_tolerance = 1)]
 fn issue_bicubic_filtering_clamping(ctx: &mut impl Renderer) {
-    let font_size = 10.0;
-    let (font, glyphs) = layout_glyphs_noto_cbtf("👀", font_size);
+    let mut pixmap = Pixmap::new(5, 5);
+    pixmap.set_pixel(2, 2, Color::WHITE.premultiply().to_rgba8());
+    let image = ctx.get_image_source(Arc::new(pixmap));
 
     ctx.set_paint(BLACK);
-    ctx.fill_rect(&Rect::new(0.0, 0.0, 32.0, 32.0));
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
 
-    ctx.set_transform(Affine::translate((5.0, 19.0)));
-    ctx.glyph_run(&font)
-        .font_size(font_size)
-        .fill_glyphs(glyphs.into_iter())
-        .unwrap();
+    ctx.set_paint_transform(Affine::scale(20.0));
+    ctx.set_paint(Image {
+        image,
+        sampler: ImageSampler {
+            x_extend: Extend::Pad,
+            y_extend: Extend::Pad,
+            quality: ImageQuality::High,
+            alpha: 1.0,
+        },
+    });
+    ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
 }
 
 #[vello_test(skip_multithreaded, gpu_no_depth)]
@@ -857,12 +884,12 @@ fn image_filtering_at_extend_boundary(
     ctx.fill_rect(&Rect::new(10.0, 10.0, 90.0, 90.0));
 }
 
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn issue_image_filtering_at_reflect_boundary(ctx: &mut impl Renderer) {
     image_filtering_at_extend_boundary(ctx, 2, Extend::Reflect, (-1.0_f32).next_down());
 }
 
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn issue_image_filtering_at_repeat_boundary(ctx: &mut impl Renderer) {
     image_filtering_at_extend_boundary(ctx, 3, Extend::Repeat, 15.0_f32.next_down());
 }

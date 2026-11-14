@@ -12,6 +12,70 @@ Subheadings to categorize changes are `added, changed, deprecated, removed, fixe
 
 This release has an [MSRV][] of 1.89.
 
+### Added
+
+- `ResetOptions`, the options for `vello_cpu::RenderContext::reset_with` and `vello_gpu::Scene::reset_with`. (by [@LaurenzV][])
+
+## [0.4.0][] - 2026-11-11
+
+This release has an [MSRV][] of 1.89.
+
+### Added
+
+- `FilterPrimitive::GaussianBlur` blurs each axis by its own standard deviation (`std_deviation_x`, `std_deviation_y`), like SVG's `stdDeviation="x y"`; a blur along one axis only decimates and convolves that axis alone. `FilterPrimitive::gaussian_blur` builds a blur with the same deviation on both axes. ([#1997][] by [@theashraf][])
+- `RectU16::visible_scene_bounds` for the part of a scene that is visible in a target when the scene is placed at an offset. ([#2028][] by [@LaurenzV][])
+
+### Changed
+
+- Breaking change: `FilterPrimitive::GaussianBlur`'s `std_deviation` is now `std_deviation_x` and `std_deviation_y`, `filter::gaussian_blur::GaussianBlur` carries a decimation plan and kernel per axis, and `DecimationSizer` scales the axes independently through `downscale_axes` and `upscale_axes`. ([#1997][] by [@theashraf][])
+- A blur under a non-uniform scale or skew is scaled per axis instead of by the average scale factor, so its device-space extent follows the transform. ([#1997][] by [@theashraf][])
+- Breaking change: `ImageSource::OpaqueId`, `ImageSource::opaque_id`, and `ImageSource::opaque_id_with_transparency_hint` have been replaced by the hidden `ImageSource::Atlas`, which is only used internally for glyph caching. `ImageResolver` is now hidden as well, and `NoOpImageResolver` has been removed. Use `ImageSource::Pixmap` or `ImageSource::external_texture` instead. ([#2061][] by [@LaurenzV][])
+- Breaking change: The re-exported `fearless_simd` has been updated to 1.0. ([#1987][] by [@LaurenzV][])
+- Breaking change: `RadialKind::Focal` holds a precomputed `FocalKind`, scale and bias instead of the full `FocalData`. ([#2003][] by [@LaurenzV][])
+- Drawing line-heavy content under a small clip is faster. ([#1954][] by [@AdrianEddy][])
+
+### Fixed
+
+- Cubics flattened far from the origin now match the same curve flattened near it. ([#2039][] by [@josefguenther][])
+
+## [0.3.0][] - 2026-10-02
+
+This release has an [MSRV][] of 1.89.
+
+### Added
+
+- `TargetInit<C>` for configuring target clears or compositing over existing contents. ([#1866][] by [@LaurenzV][])
+- Public `pixmap::premultiply_rgba8` and `unpremultiply_rgba8` helpers. ([#1930][] by [@LaurenzV][])
+- `ImageSource::external_texture` for external GPU texture paints. ([#1824][] by [@LaurenzV][])
+- Support for `ImageSampler::alpha`. ([#1880][] by [@LaurenzV][])
+- Rectangular clip support in `ClipContext`, `ClipState`, and `ViewportState`. ([#1916][], [#1926][] by [@LaurenzV][])
+
+### Changed
+
+- Breaking change: Unified pixmap construction in `Pixmap::from_parts`, which now accepts `Vec<u8>` and `PixelMetadata`. ([#1834][] by [@LaurenzV][])
+- Breaking change: Replaced `Pixmap::take` and `take_unpremultiplied` with `take_rgba8` and `try_take_rgb8`, adding RGB output support. ([#1855][] by [@LaurenzV][])
+- Breaking change: Atlas sizes, allocation dimensions, and image-cache offsets now use `u16`; the `OffsetU32`, `SizeU32`, and `RectU32` geometry types have been removed. ([#1826][] by [@LaurenzV][])
+- Breaking change: Updated `fearless_simd` to v0.7.0 and adapted the SIMD utility APIs. ([#1853][] by [@LaurenzV][])
+- Breaking change: `ClipContext`, `ClipState`, and `ViewportState` rename `push_clip` to `push_clip_path`, and their clip accessors now return `ClipRef` instead of `PathDataRef`. ([#1916][], [#1926][] by [@LaurenzV][])
+- Breaking change: Probe APIs now support configurable features, depth-buffer testing, and per-cell statistics. ([#1901][], [#1908][] by [@LaurenzV][])
+- Breaking change: `EncodeExt::encode_into` now returns `Option<Paint>`. ([#1949][] by [@grebmeg][])
+
+### Removed
+
+- Breaking change: `EncodedExternalTexture`. ([#1824][] by [@LaurenzV][])
+- Breaking change: `ImageCache::allocate_excluding` and `MultiAtlasManager::try_allocate_excluding`. ([#1825][] by [@LaurenzV][])
+
+### Fixed
+
+- Gradient cache collisions between premultiplied and unpremultiplied alpha interpolation. ([#1932][] by [@LaurenzV][])
+- Color conversions on big-endian targets. ([#1845][] by [@LaurenzV][])
+
+### Optimized
+
+- Rectangle rendering. ([#1962][] by [@nicoburns][])
+- Pixmap premultiplication and unpremultiplication. ([#1834][], [#1839][] by [@LaurenzV][])
+- Rectangular clip intersections. ([#1926][] by [@LaurenzV][])
+
 ## [0.2.0][] - 2026-08-07
 
 This release has an [MSRV][] of 1.88.
@@ -224,14 +288,17 @@ This is the initial release. No changelog was kept for this release.
 
 See also the [vello_cpu 0.0.1](../vello_cpu/CHANGELOG.md#001---2025-05-10) release.
 
+[@AdrianEddy]: https://github.com/AdrianEddy
 [@b0nes164]: https://github.com/b0nes164
 [@conor-93]: https://github.com/conor-93
 [@dipeshbabu]: https://github.com/dipeshbabu
-[@DJMcNab]: https://github.com/waywardmonkeys
+[@DJMcNab]: https://github.com/DJMcNab
 [@grebmeg]: https://github.com/grebmeg
+[@josefguenther]: https://github.com/josefguenther
 [@LaurenzV]: https://github.com/LaurenzV
 [@nicoburns]: https://github.com/nicoburns
 [@taj-p]: https://github.com/taj-p
+[@theashraf]: https://github.com/theashraf
 [@tomcur]: https://github.com/tomcur
 [@tronical]: https://github.com/tronical
 [@upsuper]: https://github.com/upsuper
@@ -311,8 +378,35 @@ See also the [vello_cpu 0.0.1](../vello_cpu/CHANGELOG.md#001---2025-05-10) relea
 [#1778]: https://github.com/linebender/vello/pull/1778
 [#1779]: https://github.com/linebender/vello/pull/1779
 [#1801]: https://github.com/linebender/vello/pull/1801
+[#1824]: https://github.com/linebender/vello/pull/1824
+[#1825]: https://github.com/linebender/vello/pull/1825
+[#1826]: https://github.com/linebender/vello/pull/1826
+[#1834]: https://github.com/linebender/vello/pull/1834
+[#1839]: https://github.com/linebender/vello/pull/1839
+[#1845]: https://github.com/linebender/vello/pull/1845
+[#1853]: https://github.com/linebender/vello/pull/1853
+[#1855]: https://github.com/linebender/vello/pull/1855
+[#1866]: https://github.com/linebender/vello/pull/1866
+[#1880]: https://github.com/linebender/vello/pull/1880
+[#1901]: https://github.com/linebender/vello/pull/1901
+[#1908]: https://github.com/linebender/vello/pull/1908
+[#1916]: https://github.com/linebender/vello/pull/1916
+[#1926]: https://github.com/linebender/vello/pull/1926
+[#1930]: https://github.com/linebender/vello/pull/1930
+[#1932]: https://github.com/linebender/vello/pull/1932
+[#1949]: https://github.com/linebender/vello/pull/1949
+[#1954]: https://github.com/linebender/vello/pull/1954
+[#1962]: https://github.com/linebender/vello/pull/1962
+[#1987]: https://github.com/linebender/vello/pull/1987
+[#1997]: https://github.com/linebender/vello/pull/1997
+[#2003]: https://github.com/linebender/vello/pull/2003
+[#2028]: https://github.com/linebender/vello/pull/2028
+[#2039]: https://github.com/linebender/vello/pull/2039
+[#2061]: https://github.com/linebender/vello/pull/2061
 
-[Unreleased]: https://github.com/linebender/vello/compare/sparse-strips-v0.2.0...HEAD
+[Unreleased]: https://github.com/linebender/vello/compare/sparse-strips-v0.4.0...HEAD
+[0.4.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.3.0...sparse-strips-v0.4.0
+[0.3.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.2.0...sparse-strips-v0.3.0
 [0.2.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.1.0...sparse-strips-v0.2.0
 [0.1.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.0.9...sparse-strips-v0.1.0
 [0.0.9]: https://github.com/linebender/vello/compare/sparse-strips-v0.0.8...sparse-strips-v0.0.9

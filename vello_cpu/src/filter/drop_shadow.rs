@@ -11,7 +11,7 @@
 //! 4. Composite shadow color with blurred alpha
 //! 5. Composite shadow with original graphic
 //!
-//! @see <https://drafts.fxtf.org/filter-effects-2/#feDropShadowElement>
+//! @see <https://www.w3.org/TR/filter-effects-1/#feDropShadowElement>
 
 use super::FilterEffect;
 use super::gaussian_blur::apply_blur;
@@ -80,6 +80,8 @@ fn apply_drop_shadow(
             &mut shadow_pixmap,
             scratch,
             n_decimations,
+            n_decimations,
+            kernel,
             kernel,
             edge_mode,
         );

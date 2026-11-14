@@ -71,63 +71,53 @@ impl ImageId {
     }
 }
 
+/// Region of an externally owned texture used by an image paint.
+///
+/// Whenever sampling the whole texture instead of a subregion from an atlas, you should **always**
+/// prefer using [`TextureRegion::Full`] over [`TextureRegion::Rect`], as it will
+/// have better performance.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TextureRegion {
+    /// The entire texture view.
+    Full,
+    /// A subrectangle in texel coordinates.
+    Rect(RectU16),
+}
+
 /// Bitmap source used by `Image`.
 #[derive(Debug, Clone)]
 pub enum ImageSource {
     /// Pixmap pixels travel with the scene packet.
     Pixmap(Arc<Pixmap>),
-    // TODO: Explore whether we can merge opaque ID and external texture in some form?
-    /// Pixmap pixels were registered earlier; this is just a handle.
-    OpaqueId {
-        /// The image handle.
-        id: ImageId,
-        /// Whether the image may contain non-opaque pixels.
-        may_have_transparency: bool,
-    },
+    /// An entry in a renderer's internal glyph atlas.
+    ///
+    /// This is used by the glyph caching backends and should not be constructed manually.
+    #[doc(hidden)]
+    Atlas(ImageId),
     /// An externally owned texture supplied to the renderer at render time.
     ExternalTexture {
         /// Opaque external texture handle.
         id: TextureId,
-        /// Source region to sample from in texel coordinates.
-        source_region: RectU16,
+        /// Source region to sample from.
+        source_region: TextureRegion,
         /// Whether the source region may contain non-opaque pixels.
         may_have_transparency: bool,
     },
 }
 
 impl ImageSource {
-    /// Create an [`ImageSource`] from a pre-registered image handle.
-    ///
-    /// Conservatively assumes the image may have non-opaque pixels.
-    /// Use [`Self::opaque_id_with_transparency_hint`] when you know the image is fully opaque.
-    pub fn opaque_id(id: ImageId) -> Self {
-        Self::OpaqueId {
-            id,
-            may_have_transparency: true,
-        }
-    }
-
-    /// Create an [`ImageSource`] from a pre-registered image handle,
-    /// with an explicit hint about whether the image may have non-opaque pixels.
-    pub fn opaque_id_with_transparency_hint(id: ImageId, may_have_transparency: bool) -> Self {
-        Self::OpaqueId {
-            id,
-            may_have_transparency,
-        }
-    }
-
     /// Create an image source backed by a texture supplied to the renderer at render time.
     ///
     /// # Panics
     ///
-    /// Panics if `source_region` is empty.
+    /// Panics if `source_region` is an empty [`TextureRegion::Rect`].
     pub fn external_texture(
         texture_id: TextureId,
-        source_region: RectU16,
+        source_region: TextureRegion,
         may_have_transparency: bool,
     ) -> Self {
         assert!(
-            !source_region.is_empty(),
+            !matches!(source_region, TextureRegion::Rect(rect) if rect.is_empty()),
             "external texture source regions must not be empty"
         );
 
@@ -142,11 +132,8 @@ impl ImageSource {
     pub fn may_have_transparency(&self) -> bool {
         match self {
             Self::Pixmap(p) => p.may_have_transparency(),
-            Self::OpaqueId {
-                may_have_transparency,
-                ..
-            }
-            | Self::ExternalTexture {
+            Self::Atlas(_) => true,
+            Self::ExternalTexture {
                 may_have_transparency,
                 ..
             } => *may_have_transparency,
@@ -180,7 +167,7 @@ impl ImageSource {
             peniko::ImageFormat::Rgba8 => {}
             peniko::ImageFormat::Bgra8 => {
                 // TODO: SIMDify
-                for pixel in rgba.chunks_exact_mut(4) {
+                for pixel in rgba.as_chunks_mut::<4>().0 {
                     pixel.swap(0, 2);
                 }
             }
@@ -201,12 +188,12 @@ impl ImageSource {
 /// An image.
 pub type Image = peniko::ImageBrush<ImageSource>;
 
-/// Trait for resolving opaque image IDs to pixmaps at rasterization time.
+/// Trait for resolving atlas image IDs to pixmaps at rasterization time.
 ///
-/// This allows delaying the resolution of `ImageSource::OpaqueId` until the
-/// image is actually needed during rasterization, enabling patterns like
-/// dynamic sprite atlases where the image data may be updated between
-/// encoding and rendering.
+/// This allows delaying the resolution of `ImageSource::Atlas` until the
+/// image is actually needed during rasterization, so that the atlas may be
+/// updated between encoding and rendering.
+#[doc(hidden)]
 pub trait ImageResolver: Send + Sync {
     /// Resolve an `ImageId` to its pixmap data.
     ///
@@ -215,16 +202,6 @@ pub trait ImageResolver: Send + Sync {
     ///
     /// Returns `None` if the image ID is not found in the registry.
     fn resolve(&self, id: ImageId) -> Option<Arc<Pixmap>>;
-}
-
-/// A no-op image resolver that always returns `None`.
-#[derive(Debug, Clone, Copy, Default)]
-pub struct NoOpImageResolver;
-
-impl ImageResolver for NoOpImageResolver {
-    fn resolve(&self, _id: ImageId) -> Option<Arc<Pixmap>> {
-        None
-    }
 }
 
 /// A premultiplied color.

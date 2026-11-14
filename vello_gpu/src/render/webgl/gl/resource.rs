@@ -5,9 +5,9 @@ use core::ops::Deref;
 
 use crate::{WebGlError, WebGlOperation, WebGlResourceKind, WebGlShaderStage};
 
-use super::{
-    WebGl2RenderingContext, WebGlBuffer, WebGlFramebuffer, WebGlProgram, WebGlShader, WebGlTexture,
-    WebGlVertexArrayObject,
+use web_sys::{
+    WebGl2RenderingContext, WebGlBuffer, WebGlFramebuffer, WebGlProgram, WebGlSampler, WebGlShader,
+    WebGlTexture, WebGlVertexArrayObject,
 };
 #[cfg(feature = "probe")]
 use web_sys::{WebGlRenderbuffer, WebGlSync};
@@ -33,7 +33,7 @@ pub(crate) struct Resource<T: GlResource> {
 // unique ownership and we don't end up deleting the same resource
 // twice.
 impl<T: GlResource> Resource<T> {
-    pub(super) fn new(gl: &WebGl2RenderingContext) -> Result<Self, WebGlError> {
+    pub(crate) fn new(gl: &WebGl2RenderingContext) -> Result<Self, WebGlError> {
         let raw = T::create(gl).ok_or(WebGlError::OperationFailed {
             operation: WebGlOperation::ResourceCreation(T::KIND),
             message: None,
@@ -43,6 +43,14 @@ impl<T: GlResource> Resource<T> {
             gl: gl.clone(),
             raw,
         })
+    }
+
+    /// Takes ownership of a resource created elsewhere, which is deleted when this is dropped.
+    pub(crate) fn from_raw(gl: &WebGl2RenderingContext, raw: T) -> Self {
+        Self {
+            gl: gl.clone(),
+            raw,
+        }
     }
 }
 
@@ -61,7 +69,7 @@ impl<T: GlResource> Deref for Resource<T> {
 }
 
 #[derive(Debug)]
-pub(crate) struct WebGlVertexShader(WebGlShader);
+pub(crate) struct WebGlVertexShader(pub(crate) WebGlShader);
 
 impl Deref for WebGlVertexShader {
     type Target = WebGlShader;
@@ -72,7 +80,7 @@ impl Deref for WebGlVertexShader {
 }
 
 #[derive(Debug)]
-pub(crate) struct WebGlFragmentShader(WebGlShader);
+pub(crate) struct WebGlFragmentShader(pub(crate) WebGlShader);
 
 impl Deref for WebGlFragmentShader {
     type Target = WebGlShader;
@@ -91,6 +99,18 @@ impl GlResource for WebGlTexture {
 
     fn delete(gl: &WebGl2RenderingContext, raw: &Self) {
         gl.delete_texture(Some(raw));
+    }
+}
+
+impl GlResource for WebGlSampler {
+    const KIND: WebGlResourceKind = WebGlResourceKind::Sampler;
+
+    fn create(gl: &WebGl2RenderingContext) -> Option<Self> {
+        gl.create_sampler()
+    }
+
+    fn delete(gl: &WebGl2RenderingContext, raw: &Self) {
+        gl.delete_sampler(Some(raw));
     }
 }
 
@@ -195,6 +215,7 @@ impl GlResource for WebGlVertexArrayObject {
 }
 
 pub(crate) type Texture = Resource<WebGlTexture>;
+pub(crate) type Sampler = Resource<WebGlSampler>;
 pub(crate) type Buffer = Resource<WebGlBuffer>;
 pub(crate) type Framebuffer = Resource<WebGlFramebuffer>;
 #[cfg(feature = "probe")]

@@ -12,6 +12,39 @@ Subheadings to categorize changes are `added, changed, deprecated, removed, fixe
 
 This release has an [MSRV][] of 1.89.
 
+## [0.5.0][] - 2026-11-11
+
+This release has an [MSRV][] of 1.89.
+
+### Changed
+
+- Breaking change: Updated to `skrifa` 0.49, which is exposed through `ColorGlyph::skrifa_glyph`. ([#1996][] by [@nicoburns][])
+
+### Fixed
+
+- Synthetic emboldening of unhinted glyphs being scaled down to almost nothing. `FontEmbolden` amounts are now in pixels at the run's font size and scale with the run transform. ([#2049][] by [@nicoburns][])
+- COLR glyphs without a `ClipBox`, which includes all COLRv0 glyphs, coming out lighter along the edges of their bounds. ([#2050][] by [@ump45nose][])
+- Placement of `sbix` bitmap glyphs. ([#1996][] by [@nicoburns][])
+
+## [0.4.0][] - 2026-10-02
+
+This release has an [MSRV][] of 1.89.
+
+### Changed
+
+- Breaking change: Glyph filling and stroking methods now return `Result<(), GlyphRenderError>`. ([#1944][] by [@LaurenzV][])
+- Breaking change: `GlyphAtlas::replay_pending_atlas_commands` now accepts a fallible callback. ([#1890][] by [@LaurenzV][])
+- Bitmap glyphs now consistently use bilinear sampling (`ImageQuality::Medium`) instead of switching to bicubic sampling when downscaled. ([#1970][] by [@LaurenzV][])
+
+### Removed
+
+- Breaking change: `renderer::quality_for_scale`. ([#1970][] by [@LaurenzV][])
+
+### Fixed
+
+- Incorrect placement of non-Apple `sbix` glyphs caused by the Apple Color Emoji workaround. ([#1936][] by [@LaurenzV][])
+- Incorrect `sbix` glyph placement caused by sign errors in bearing offsets. ([#1939][] by [@LaurenzV][])
+
 ## [0.3.0][] - 2026-08-07
 
 This release has an [MSRV][] of 1.88.
@@ -55,6 +88,7 @@ Glifo moved to the Vello repo in [#1539][] and was prepared for release by [@con
 [@nicoburns]: https://github.com/nicoburns
 [@oscargus]: https://github.com/oscargus
 [@taj-p]: https://github.com/taj-p
+[@ump45nose]: https://github.com/ump45nose
 [@xStrom]: https://github.com/xStrom
 
 [#1539]: https://github.com/linebender/vello/pull/1539
@@ -62,8 +96,18 @@ Glifo moved to the Vello repo in [#1539][] and was prepared for release by [@con
 [#1668]: https://github.com/linebender/vello/pull/1668
 [#1672]: https://github.com/linebender/vello/pull/1672
 [#1774]: https://github.com/linebender/vello/pull/1774
+[#1890]: https://github.com/linebender/vello/pull/1890
+[#1936]: https://github.com/linebender/vello/pull/1936
+[#1939]: https://github.com/linebender/vello/pull/1939
+[#1944]: https://github.com/linebender/vello/pull/1944
+[#1970]: https://github.com/linebender/vello/pull/1970
+[#1996]: https://github.com/linebender/vello/pull/1996
+[#2049]: https://github.com/linebender/vello/pull/2049
+[#2050]: https://github.com/linebender/vello/pull/2050
 
-[Unreleased]: https://github.com/linebender/vello/compare/glifo-v0.3.0...HEAD
+[Unreleased]: https://github.com/linebender/vello/compare/glifo-v0.5.0...HEAD
+[0.5.0]: https://github.com/linebender/vello/compare/glifo-v0.4.0...glifo-v0.5.0
+[0.4.0]: https://github.com/linebender/vello/compare/glifo-v0.3.0...glifo-v0.4.0
 [0.3.0]: https://github.com/linebender/vello/compare/glifo-v0.2.0...glifo-v0.3.0
 [0.2.0]: https://github.com/linebender/vello/compare/glifo-v0.1.1...glifo-v0.2.0
 [0.1.1]: https://github.com/linebender/vello/compare/glifo-v0.1.0...glifo-v0.1.1

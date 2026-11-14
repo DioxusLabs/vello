@@ -32,30 +32,12 @@ use vello_common::peniko::color::palette::css::BLACK;
 use vello_common::peniko::{BlendMode, Fill};
 use vello_common::pixmap::{Pixmap, PixmapMut};
 use vello_common::render_state::RenderState;
+use vello_common::reset::ResetOptions;
 use vello_common::transforms::{RootTransforms, Transforms};
 use vello_common::util::into_fast_path_rect;
 
 #[cfg(feature = "text")]
 pub(crate) const DEFAULT_GLYPH_ATLAS_SIZE: u16 = 4096;
-// Why do we need this? The reason is that the way uploaded images work in Vello GPU
-// is different from how they work in Vello CPU.
-//
-// In Vello GPU, all images, regardless of whether they are user-uploaded
-// images or cached glyphs, are stored in an image atlas at a certain location. An image ID then
-// uniquely resolves to an atlas page index + a location on that page. Whenever we want to
-// cache a new glyph, we simply allocate a location in the image atlas and then return the image
-// ID associated with that location.
-//
-// On Vello CPU, it works differently: An image ID is associated with a complete pixmap.
-// If a user uploads an image, instead of blitting it into a bigger image atlas, we just
-// store the user-provided pixmap and associate an image ID with the whole pixmap. However,
-// for glyph caching to work we need the same semantics as in Vello GPU. Therefore, we
-// use a marker to determine whether an image ID refers to a normal uploaded image or a cached
-// glyph and apply special handling based on that.
-//
-// All IDs < than this value are reserved for normal images, all IDs >= this value are
-// reserved for atlas pages.
-pub(crate) const ATLAS_IMAGE_ID_BASE: u32 = u32::MAX / 2;
 
 /// Persistent resources required by Vello CPU for rendering.
 ///
@@ -121,7 +103,7 @@ pub struct RasterizerSettings {
     /// Offset in destination pixels where the render context origin is placed.
     ///
     /// See [`RenderContext::render_with`] for more information.
-    pub offset: (u16, u16),
+    pub offset: (i32, i32),
 }
 
 impl Default for RasterizerSettings {
@@ -414,20 +396,101 @@ impl RenderContext {
 
     /// Fill a blurred rectangle with the given corner radius and standard deviation.
     ///
-    /// When `invert` is `true`, the inverse (`1 - alpha`) of the blur coverage is painted: the
-    /// paint is fully opaque outside the blurred rectangle and fades to transparent inside it. This
-    /// can be used to implement inset box shadows.
+    /// Note that this only works properly if the current paint is set to a solid color.
+    /// If not, it will fall back to using black as the fill color.
+    pub fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32) {
+        let rect = rect.abs();
+        let Some(paint) = self.encode_blurred_rounded_rect(rect, radius, std_dev, false) else {
+            return;
+        };
+
+        // The actual rectangle we paint needs to be larger so that the blurring effect
+        // is not cut off.
+        // The impulse response of a gaussian filter is infinite.
+        // For performance reason we cut off the filter at some extent where the response is close to zero.
+        let kernel_size = 2.5 * std_dev;
+        let inflated_rect = rect.inflate(f64::from(kernel_size), f64::from(kernel_size));
+        let transform = self
+            .root_transforms
+            .effective_path_transform(self.transforms());
+
+        self.rect_to_temp_path(&inflated_rect);
+
+        self.dispatcher.fill_path(
+            &self.temp_path,
+            Fill::NonZero,
+            transform,
+            paint,
+            self.state.blend_mode,
+            self.aliasing_threshold,
+            self.mask.clone(),
+        );
+    }
+
+    /// Fill `path` with a blurred rounded rectangle with the given corner radius and standard
+    /// deviation.
+    ///
+    /// This effectively draws the blurred rounded rectangle clipped to `path`. If just the blurred
+    /// rounded rectangle is desired without clipping, use the simpler
+    /// [`Self::fill_blurred_rounded_rect`], which will be easier to use for many users.
+    ///
+    /// `path` is filled using the current fill rule.
+    ///
+    /// The blurred rounded rectangle is `rect` with its corners rounded by `radius`, blurred by
+    /// a gaussian filter with a standard deviation of `std_dev`. Negative values of `std_dev`
+    /// are treated as zero.
+    ///
+    /// When `invert` is `false`, the paint is applied with the coverage (`alpha`) of the blurred
+    /// rounded rectangle. Points which are more than approximately 2.5 times `std_dev` outside
+    /// of the edges of `rect` will not be perceptibly painted to, but calculations will still
+    /// be performed for them. So for performance reasons, `path` should not extend further
+    /// than that.
+    ///
+    /// When `invert` is `true`, the inverse (`1 - alpha`) of that coverage is applied instead.
+    /// The coverage then falls off towards the inside of `rect`, and is effectively full at
+    /// all points of `path` which are more than approximately 2.5 times `std_dev` outside of
+    /// the edges of `rect`. This means that the extent of the painted area is determined only
+    /// by `path`, which can extend as far beyond `rect` as is needed.
+    /// This can be used to implement inset box shadows, by using the box as `path`, the box
+    /// shrunk by the spread of the shadow and translated by its offset as `rect`, and the
+    /// corner radius of the box reduced by the spread as `radius`.
     ///
     /// Note that this only works properly if the current paint is set to a solid color.
     /// If not, it will fall back to using black as the fill color.
-    pub fn fill_blurred_rounded_rect(
+    pub fn fill_blurred_rounded_rect_in(
         &mut self,
+        path: &BezPath,
         rect: &Rect,
         radius: f32,
         std_dev: f32,
         invert: bool,
     ) {
-        let rect = rect.abs();
+        let Some(paint) = self.encode_blurred_rounded_rect(rect.abs(), radius, std_dev, invert)
+        else {
+            return;
+        };
+        let transform = self
+            .root_transforms
+            .effective_path_transform(self.transforms());
+
+        self.dispatcher.fill_path(
+            path,
+            self.state.fill_rule,
+            transform,
+            paint,
+            self.state.blend_mode,
+            self.aliasing_threshold,
+            self.mask.clone(),
+        );
+    }
+
+    fn encode_blurred_rounded_rect(
+        &mut self,
+        rect: Rect,
+        radius: f32,
+        std_dev: f32,
+        invert: bool,
+    ) -> Option<Paint> {
         let color = match self.state.paint {
             PaintType::Solid(s) => s,
             // Fallback to black when attempting to blur a rectangle with an image/gradient paint
@@ -442,34 +505,10 @@ impl RenderContext {
             invert,
         };
 
-        // The actual rectangle we paint needs to be larger so that the blurring effect
-        // is not cut off.
-        // The impulse response of a gaussian filter is infinite.
-        // For performance reason we cut off the filter at some extent where the response is close to zero.
-        let kernel_size = 2.5 * std_dev;
-        let inflated_rect = rect.inflate(f64::from(kernel_size), f64::from(kernel_size));
-        let transform = self
-            .root_transforms
-            .effective_path_transform(self.transforms());
         let paint_transform = self
             .root_transforms
             .effective_paint_transform(self.transforms());
-
-        let Some(paint) = blurred_rect.encode_into(&mut self.encoded_paints, paint_transform, None)
-        else {
-            return;
-        };
-
-        self.rect_to_temp_path(&inflated_rect);
-        self.dispatcher.fill_path(
-            &self.temp_path,
-            Fill::NonZero,
-            transform,
-            paint,
-            self.state.blend_mode,
-            self.aliasing_threshold,
-            self.mask.clone(),
-        );
+        blurred_rect.encode_into(&mut self.encoded_paints, paint_transform, None)
     }
 
     /// Creates a builder for drawing a run of glyphs that have the same attributes.
@@ -520,13 +559,7 @@ impl RenderContext {
         filter: Option<Filter>,
         luminance_mask: bool,
     ) {
-        let mask = mask.and_then(|m| {
-            if m.width() != self.width || m.height() != self.height {
-                None
-            } else {
-                Some(m)
-            }
-        });
+        let mask = mask.filter(|m| !(m.width() != self.width || m.height() != self.height));
 
         let blend_mode = blend_mode.unwrap_or_default();
         let opacity = opacity.unwrap_or(1.0).clamp(0.0, 1.0);
@@ -666,10 +699,6 @@ impl RenderContext {
     }
 
     /// Set the current paint.
-    ///
-    /// If the paint is an image with `ImageSource::OpaqueId`, it will be
-    /// resolved to the corresponding pixmap at rasterization time.
-    /// Make sure to register images with [`Resources::register_image`] first.
     pub fn set_paint(&mut self, paint: impl Into<PaintType>) {
         self.state.paint = paint.into();
     }
@@ -774,14 +803,6 @@ impl RenderContext {
         self.filter = None;
     }
 
-    /// Reset the render context and update the scene size.
-    pub fn reset_and_resize(&mut self, width: u16, height: u16) {
-        self.width = width;
-        self.height = height;
-
-        self.reset();
-    }
-
     /// Reset the render context.
     pub fn reset(&mut self) {
         self.dispatcher.reset(self.width, self.height);
@@ -790,6 +811,19 @@ impl RenderContext {
         self.root_transforms.reset();
         self.state.reset();
         self.aliasing_threshold = None;
+        self.filter = None;
+    }
+
+    /// Reset the render context according to `options`.
+    pub fn reset_with(&mut self, options: ResetOptions) {
+        let (width, height) = options.size.unwrap_or((self.width, self.height));
+        if options.shrink {
+            *self = Self::new_with(width, height, self.render_settings);
+        } else {
+            self.width = width;
+            self.height = height;
+            self.reset();
+        }
     }
 
     /// Push a new clip path to the clip stack.
@@ -880,6 +914,7 @@ impl RenderContext {
     /// 3. In case the width/height of the pixmap is _smaller_ than the offset + width/height of the
     ///    scene, then anything that exceeds the pixmap boundaries is simply cut off. This can be useful
     ///    if for some reason you only want to rasterize a small cut-out of the original scene.
+    ///    Negative offsets cut off the top/left in the same way.
     pub fn render_with<'a>(
         &self,
         target: impl Into<PixmapMut<'a>>,
@@ -911,7 +946,7 @@ impl RenderContext {
                 // TODO: Optimize with SIMD? Unfortunately we can't just cast to u32 and use
                 // `fill` because the user-provided slice might not have the correct alignment.
                 let color = color.to_ne_bytes();
-                for pixel in data.chunks_exact_mut(4) {
+                for pixel in data.as_chunks_mut::<4>().0 {
                     pixel.copy_from_slice(&color);
                 }
             }
@@ -993,75 +1028,23 @@ impl RenderContext {
     }
 }
 
-/// Image registry implementation.
-impl Resources {
-    /// Register a pixmap in the image registry and return its [`ImageId`].
-    pub fn register_image(&mut self, pixmap: Arc<Pixmap>) -> ImageId {
-        self.image_registry.register(pixmap)
-    }
-
-    /// Remove an image from the registry.
-    pub fn destroy_image(&mut self, id: ImageId) -> bool {
-        self.image_registry.destroy(id)
-    }
-
-    /// Resolve an `ImageId` to its pixmap data.
-    pub fn resolve_image(&self, id: ImageId) -> Option<Arc<Pixmap>> {
-        self.image_registry.resolve(id)
-    }
-
-    /// Clear the image registry.
-    pub fn clear_images(&mut self) {
-        self.image_registry.clear();
-    }
-}
-
 /// Registry that maps opaque [`ImageId`]s to [`Pixmap`] data.
 ///
-/// Used by [`RenderContext`] to resolve `ImageSource::OpaqueId` at rasterization time.
+/// Used by [`RenderContext`] to resolve `ImageSource::Atlas` at rasterization time.
 #[derive(Debug, Default)]
 pub(crate) struct ImageRegistry {
     images: HashMap<u32, Arc<Pixmap>>,
-    next_id: u32,
 }
 
 impl ImageRegistry {
-    fn register(&mut self, pixmap: Arc<Pixmap>) -> ImageId {
-        let id = self.next_id;
-        assert!(
-            id < ATLAS_IMAGE_ID_BASE,
-            "image registry exhausted non-atlas image IDs"
-        );
-
-        self.next_id += 1;
-        self.images.insert(id, pixmap);
-        ImageId::new(id)
-    }
-
     #[cfg(feature = "text")]
     pub(crate) fn register_atlas_page(&mut self, page_index: u32, pixmap: Arc<Pixmap>) {
-        self.images.insert(
-            ImageId::new(ATLAS_IMAGE_ID_BASE + page_index).as_u32(),
-            pixmap,
-        );
-    }
-
-    pub(crate) fn destroy(&mut self, id: ImageId) -> bool {
-        self.images.remove(&id.as_u32()).is_some()
+        self.images.insert(page_index, pixmap);
     }
 
     #[cfg(feature = "text")]
     pub(crate) fn destroy_atlas_page(&mut self, page_index: u32) -> bool {
-        self.destroy(ImageId::new(ATLAS_IMAGE_ID_BASE + page_index))
-    }
-
-    fn resolve(&self, id: ImageId) -> Option<Arc<Pixmap>> {
-        self.images.get(&id.as_u32()).cloned()
-    }
-
-    fn clear(&mut self) {
-        self.images.clear();
-        self.next_id = 0;
+        self.images.remove(&page_index).is_some()
     }
 }
 
@@ -1075,7 +1058,7 @@ impl ImageResolver for ImageRegistry {
 mod tests {
     #[cfg(feature = "text")]
     use crate::peniko::{Blob, FontData};
-    use crate::{RasterizerSettings, RenderContext, Resources, TargetInit};
+    use crate::{RasterizerSettings, RenderContext, ResetOptions, Resources, TargetInit};
     #[cfg(feature = "text")]
     use alloc::sync::Arc;
     use alloc::vec;
@@ -1083,6 +1066,7 @@ mod tests {
     use glifo::Glyph;
     use vello_common::color::PremulRgba8;
     use vello_common::color::palette::css::{BLUE, RED};
+    use vello_common::filter_effects::{Filter, FilterPrimitive};
     use vello_common::kurbo::{Rect, Shape};
     use vello_common::peniko::ImageAlphaType;
     use vello_common::pixmap::{PixelMetadata, Pixmap, PixmapMut};
@@ -1213,35 +1197,44 @@ mod tests {
     }
 
     #[test]
-    fn reset_and_resize_updates_scene_size() {
-        let mut ctx = RenderContext::new(8, 4);
-        let mut resources = Resources::new();
-        let mut pixmap = Pixmap::new(4, 8);
+    fn reset_with_size_updates_scene_size() {
+        for shrink in [false, true] {
+            let mut ctx = RenderContext::new(8, 4);
+            let mut resources = Resources::new();
+            let mut pixmap = Pixmap::new(4, 8);
 
-        ctx.reset_and_resize(4, 8);
-        assert_eq!(ctx.width(), 4);
-        assert_eq!(ctx.height(), 8);
+            ctx.reset_with(ResetOptions {
+                size: Some((4, 8)),
+                shrink,
+            });
+            assert_eq!(ctx.width(), 4);
+            assert_eq!(ctx.height(), 8);
 
-        ctx.set_paint(BLUE);
-        ctx.fill_rect(&Rect::new(0.0, 0.0, 4.0, 8.0));
-        ctx.flush();
-        ctx.render(&mut pixmap, &mut resources);
+            ctx.set_paint(BLUE);
+            ctx.fill_rect(&Rect::new(0.0, 0.0, 4.0, 8.0));
+            ctx.flush();
+            ctx.render(&mut pixmap, &mut resources);
 
-        for y in 0..8 {
-            for x in 0..4 {
-                assert_eq!(pixmap.sample(x, y), blue_pixel(), "pixel at ({x}, {y})");
+            for y in 0..8 {
+                for x in 0..4 {
+                    assert_eq!(pixmap.sample(x, y), blue_pixel(), "pixel at ({x}, {y})");
+                }
             }
         }
     }
 
     #[test]
-    fn reset_restores_default_aliasing_threshold() {
+    fn reset_restores_default_state() {
         let mut ctx = RenderContext::new(4, 4);
         ctx.set_aliasing_threshold(Some(128));
+        ctx.set_filter_effect(Filter::from_primitive(FilterPrimitive::Flood {
+            color: RED,
+        }));
 
         ctx.reset();
 
         assert_eq!(ctx.aliasing_threshold, None);
+        assert!(ctx.filter.is_none());
     }
 
     #[test]
@@ -1249,7 +1242,7 @@ mod tests {
         let ctx = red_rect_context(2, 1, Rect::new(0.0, 0.0, 2.0, 1.0));
         let mut resources = Resources::new();
         let mut buffer = vec![0; 3 * 2 * 4];
-        for pixel in buffer.chunks_exact_mut(4) {
+        for pixel in buffer.as_chunks_mut::<4>().0 {
             pixel.copy_from_slice(&[GRAY.r, GRAY.g, GRAY.b, GRAY.a]);
         }
 
@@ -1273,7 +1266,7 @@ mod tests {
             red_pixel(),
             red_pixel(),
         ];
-        for (pixel, expected) in buffer.chunks_exact(4).zip(expected) {
+        for (&pixel, expected) in buffer.as_chunks::<4>().0.iter().zip(expected) {
             assert_eq!(pixel, [expected.r, expected.g, expected.b, expected.a]);
         }
     }

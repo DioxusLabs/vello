@@ -14,31 +14,35 @@ mod probe;
 use probe::ProbeIndicator;
 use std::cell::RefCell;
 use std::rc::Rc;
-use vello_common::paint::ImageId;
-use vello_common::{
-    kurbo::{Affine, Vec2},
-    paint::ImageSource,
-};
-use vello_example_scenes::image::ImageScene;
+use vello_common::kurbo::{Affine, Vec2};
+use vello_example_scenes::image::{COWBOY_TEXTURE_ID, FLOWER_TEXTURE_ID, ImageScene};
 use vello_example_scenes::{
     AnyScene,
     performance::{FrameTiming, PerformancePanel, PerformanceStage, WebGlGpuTimer, now},
 };
-use vello_gpu::{RenderSettings, Scene};
+use vello_gpu::{
+    RenderSettings, ResetOptions, Resources, Scene, WebGlError, WebGlRendererInit,
+    WebGlTextureBindings,
+};
 use wasm_bindgen::prelude::*;
+use wasm_bindgen_futures::JsFuture;
 use web_sys::{Event, HtmlCanvasElement, KeyboardEvent, MouseEvent, WheelEvent};
 
 struct RendererWrapper {
     renderer: vello_gpu::WebGlRenderer,
-    resources: vello_gpu::Resources,
+    resources: Resources,
     gpu_timer: Option<WebGlGpuTimer>,
 }
 
 impl RendererWrapper {
-    fn new(canvas: HtmlCanvasElement) -> Self {
-        let settings = RenderSettings::default();
-        let (renderer, resources) = vello_gpu::WebGlRenderer::new_with(&canvas, settings, true)
-            .expect("failed to create WebGL renderer");
+    /// Finishes `init`, which was begun on `canvas`, once its shaders are ready.
+    async fn new(canvas: HtmlCanvasElement, init: WebGlRendererInit, resources: Resources) -> Self {
+        while !init.is_ready() {
+            next_animation_frame().await;
+        }
+        let renderer = init
+            .finish()
+            .expect("failed to finish WebGL renderer initialization");
 
         Self {
             renderer,
@@ -76,19 +80,26 @@ struct AppState {
     width: u32,
     height: u32,
     renderer_wrapper: RendererWrapper,
+    texture_bindings: WebGlTextureBindings,
     probe_indicator: ProbeIndicator,
     performance: PerformancePanel<2>,
     canvas: HtmlCanvasElement,
 }
 
 impl AppState {
-    fn new(canvas: HtmlCanvasElement, scenes: Box<[AnyScene<Scene>]>) -> Self {
+    async fn new(
+        canvas: HtmlCanvasElement,
+        init: WebGlRendererInit,
+        resources: Resources,
+        scenes: Box<[AnyScene<Scene>]>,
+    ) -> Self {
         let width = canvas.width();
         let height = canvas.height();
         let current_scene = initial_scene_index(scenes.len());
 
-        let mut renderer_wrapper = RendererWrapper::new(canvas.clone());
+        let mut renderer_wrapper = RendererWrapper::new(canvas.clone(), init, resources).await;
         let probe_indicator = ProbeIndicator::new(&mut renderer_wrapper.renderer);
+        let shader_compilation = renderer_wrapper.renderer.shader_compilation_stats();
         let timing_note = if renderer_wrapper.gpu_timer.is_some() {
             "GPU queries are asynchronous and may arrive several frames later"
         } else {
@@ -106,6 +117,7 @@ impl AppState {
             width,
             height,
             renderer_wrapper,
+            texture_bindings: WebGlTextureBindings::new(),
             probe_indicator,
             performance: PerformancePanel::new(
                 "Vello GPU · native WebGL2",
@@ -122,13 +134,18 @@ impl AppState {
                     },
                 ],
                 timing_note,
+            )
+            .with_shader_compilation_stats(
+                shader_compilation.shader_count,
+                shader_compilation.poll_count,
+                shader_compilation.elapsed.as_secs_f64() * 1_000.0,
             ),
             canvas,
         };
 
         update_page_url(app_state.current_scene);
         app_state.update_title();
-        app_state.upload_images_to_atlas();
+        app_state.upload_images_to_textures();
 
         app_state
     }
@@ -150,11 +167,6 @@ impl AppState {
         );
         let scene_end = now();
 
-        let render_size = vello_gpu::RenderSize {
-            width: self.width.try_into().unwrap(),
-            height: self.height.try_into().unwrap(),
-        };
-
         if let Some(gpu_timer) = &mut self.renderer_wrapper.gpu_timer {
             gpu_timer.begin();
         }
@@ -163,9 +175,9 @@ impl AppState {
             .render(
                 &self.scene,
                 &mut self.renderer_wrapper.resources,
-                &render_size,
-                &vello_gpu::WebGlTextureBindings::new(),
-                vello_common::color::AlphaColor::TRANSPARENT,
+                vello_gpu::WebGlRenderTarget::DrawingBuffer,
+                &self.texture_bindings,
+                vello_gpu::WebGlRenderOptions::default(),
             )
             .unwrap();
         if let Some(gpu_timer) = &mut self.renderer_wrapper.gpu_timer {
@@ -204,7 +216,10 @@ impl AppState {
         self.width = width;
         self.height = height;
 
-        self.scene.reset_and_resize(width as u16, height as u16);
+        self.scene.reset_with(ResetOptions {
+            size: Some((width as u16, height as u16)),
+            ..Default::default()
+        });
         if let Some(gpu_timer) = &mut self.renderer_wrapper.gpu_timer {
             gpu_timer.reset();
         }
@@ -277,16 +292,16 @@ impl AppState {
         if self.mouse_down
             && let Some(last_client_pos) = self.last_drag_client_position
         {
-            let delta = client_delta_to_canvas_px(
-                &self.canvas,
-                x - last_client_pos.x,
-                y - last_client_pos.y,
-            );
-            self.transform = Affine::translate(delta) * self.transform;
+            self.handle_pan(x - last_client_pos.x, y - last_client_pos.y);
         }
 
         self.last_cursor_position = Some(current_pos);
         self.last_drag_client_position = Some(Vec2::new(x, y));
+    }
+
+    fn handle_pan(&mut self, client_delta_x: f64, client_delta_y: f64) {
+        let delta = client_delta_to_canvas_px(&self.canvas, client_delta_x, client_delta_y);
+        self.transform = Affine::translate(delta) * self.transform;
     }
 
     fn handle_wheel(
@@ -297,9 +312,6 @@ impl AppState {
         ctrl_key: bool,
         delta_mode: u32,
     ) {
-        let cursor_pos = client_to_canvas_px(&self.canvas, client_x, client_y);
-        self.last_cursor_position = Some(cursor_pos);
-
         let scale = if ctrl_key {
             0.01
         } else {
@@ -308,36 +320,31 @@ impl AppState {
         };
         let zoom_factor = (-delta_y * scale).exp();
 
+        self.handle_zoom(client_x, client_y, zoom_factor);
+    }
+
+    fn handle_zoom(&mut self, client_x: f64, client_y: f64, zoom_factor: f64) {
+        let cursor_pos = client_to_canvas_px(&self.canvas, client_x, client_y);
+        self.last_cursor_position = Some(cursor_pos);
         self.transform = Affine::translate(cursor_pos)
             * Affine::scale(zoom_factor)
             * Affine::translate(-cursor_pos)
             * self.transform;
     }
 
-    /// Upload images to the WebGL atlas texture
-    /// This is the WebGL analogue of the winit example's `upload_images_to_atlas` function
-    fn upload_images_to_atlas(&mut self) {
-        // 1st example — uploading pixmap directly to WebGL atlas
-        let pixmap1 = ImageScene::read_flower_image();
-        self.renderer_wrapper
-            .renderer
-            .upload_image(&mut self.renderer_wrapper.resources, &pixmap1)
-            .expect("failed to upload pixmap to WebGL atlas");
-
-        // 2nd example — uploading from a WebGL texture
-        let pixmap2 = ImageScene::read_cowboy_image();
-        let texture2 = self.pixmap_to_webgl_texture(&pixmap2);
-        self.renderer_wrapper
-            .renderer
-            .upload_image(&mut self.renderer_wrapper.resources, &texture2)
-            .expect("failed to upload texture to WebGL atlas");
+    fn upload_images_to_textures(&mut self) {
+        for (id, pixmap) in [
+            (FLOWER_TEXTURE_ID, ImageScene::read_flower_image()),
+            (COWBOY_TEXTURE_ID, ImageScene::read_cowboy_image()),
+        ] {
+            let texture = self.pixmap_to_webgl_texture(&pixmap);
+            self.texture_bindings
+                .insert(id, texture, pixmap.width(), pixmap.height());
+        }
     }
 
     /// Convert a pixmap to WebGL texture
-    fn pixmap_to_webgl_texture(
-        &self,
-        pixmap: &vello_gpu::Pixmap,
-    ) -> vello_gpu::WebGlTextureWithDimensions {
+    fn pixmap_to_webgl_texture(&self, pixmap: &vello_gpu::Pixmap) -> web_sys::WebGlTexture {
         let width = pixmap.width();
         let height = pixmap.height();
         let rgba_data = pixmap.data_as_u8_slice();
@@ -382,11 +389,7 @@ impl AppState {
             web_sys::WebGl2RenderingContext::CLAMP_TO_EDGE as i32,
         );
 
-        vello_gpu::WebGlTextureWithDimensions {
-            texture,
-            width,
-            height,
-        }
+        texture
     }
 }
 
@@ -396,15 +399,29 @@ extern "C" {
     fn request_animation_frame(f: &Closure<dyn FnMut(f64)>);
 }
 
-/// Creates a `HTMLCanvasElement` of the given dimensions and renders the given scenes into it,
-/// with interactive controls for panning, zooming, and switching between scenes.
+async fn next_animation_frame() {
+    let promise = js_sys::Promise::new(&mut |resolve, _reject| {
+        web_sys::window()
+            .unwrap()
+            .request_animation_frame(&resolve)
+            .unwrap();
+    });
+    JsFuture::from(promise).await.unwrap();
+}
+
+#[wasm_bindgen(module = "/generated/bootstrap.js")]
+extern "C" {
+    #[wasm_bindgen(js_name = earlyCanvasElement)]
+    fn early_canvas_element() -> Option<HtmlCanvasElement>;
+    #[wasm_bindgen(js_name = earlyPrecompiledShaders)]
+    fn early_precompiled_shaders() -> JsValue;
+}
+
+/// Sizes the canvas whose shaders started compiling before the WebAssembly module loaded, and
+/// renders the example scenes into it with interactive controls for panning, zooming, and
+/// switching between scenes.
 pub async fn run_interactive(canvas_width: u16, canvas_height: u16) {
-    let canvas = web_sys::Window::document(&web_sys::window().unwrap())
-        .unwrap()
-        .create_element("canvas")
-        .unwrap()
-        .dyn_into::<HtmlCanvasElement>()
-        .unwrap();
+    let canvas = early_canvas_element().expect("the bootstrap snippet runs in a document");
     canvas.set_width(canvas_width as u32);
     canvas.set_height(canvas_height as u32);
     canvas.style().set_property("width", "100%").unwrap();
@@ -422,19 +439,32 @@ pub async fn run_interactive(canvas_width: u16, canvas_height: u16) {
     // Add canvas to body
     body.append_child(&canvas).unwrap();
 
+    // The shaders keep compiling while the example scenes are built.
+    let settings = RenderSettings::default();
+    let (init, resources) = match vello_gpu::WebGlRenderer::begin_with_precompiled(
+        &early_precompiled_shaders(),
+        settings.clone(),
+    ) {
+        Err(WebGlError::IncompatiblePrecompiledShaders(reason)) => {
+            log::warn!("Compiling shaders from scratch: {reason}");
+            vello_gpu::WebGlRenderer::begin_with(&canvas, settings, true)
+        }
+        result => result,
+    }
+    .expect("failed to create WebGL renderer");
+
     let scenes = {
         let v = vello_example_scenes::get_example_scenes(
             vello_example_scenes::Capabilities::default(),
-            vec![
-                ImageSource::opaque_id(ImageId::new(0)),
-                ImageSource::opaque_id(ImageId::new(1)),
-            ],
+            ImageScene::external_texture_sources(),
         )
         .into_vec();
         v.into_boxed_slice()
     };
 
-    let app_state = Rc::new(RefCell::new(AppState::new(canvas.clone(), scenes)));
+    let app_state = Rc::new(RefCell::new(
+        AppState::new(canvas.clone(), init, resources, scenes).await,
+    ));
 
     // Set up animation frame loop
     {
@@ -557,11 +587,26 @@ pub async fn run_interactive(canvas_width: u16, canvas_height: u16) {
         closure.forget();
     }
 
+    // On-screen arrows and touch swipes
+    {
+        let prev_state = app_state.clone();
+        let next_state = app_state.clone();
+        let pan_state = app_state.clone();
+        let zoom_state = app_state.clone();
+        vello_example_scenes::navigation::add_scene_navigation(
+            &canvas,
+            move || prev_state.borrow_mut().prev_scene(),
+            move || next_state.borrow_mut().next_scene(),
+            move |dx, dy| pan_state.borrow_mut().handle_pan(dx, dy),
+            move |x, y, factor| zoom_state.borrow_mut().handle_zoom(x, y, factor),
+        );
+    }
+
     // Create instructions element
     let document = web_sys::window().unwrap().document().unwrap();
     let instructions = document.create_element("div").unwrap();
     instructions.set_inner_html(
-        "Left/Right Arrow: Change scene | Space: Reset view | Mouse Drag: Pan | Mouse Wheel: Zoom",
+        "Arrow Keys or Buttons: Change scene | Space: Reset view | Mouse or Touch Drag: Pan | Mouse Wheel or Pinch: Zoom",
     );
     let style = instructions
         .dyn_ref::<web_sys::HtmlElement>()
@@ -607,20 +652,22 @@ pub async fn render_scene(scene: Scene, width: u16, height: u16) {
         .append_child(&canvas)
         .unwrap();
 
+    let (init, resources) =
+        vello_gpu::WebGlRenderer::begin_with(&canvas, RenderSettings::default(), true)
+            .expect("failed to create WebGL renderer");
     let RendererWrapper {
         mut renderer,
         mut resources,
         ..
-    } = RendererWrapper::new(canvas);
+    } = RendererWrapper::new(canvas, init, resources).await;
 
-    let render_size = vello_gpu::RenderSize { width, height };
     renderer
         .render(
             &scene,
             &mut resources,
-            &render_size,
-            &vello_gpu::WebGlTextureBindings::new(),
-            vello_common::color::AlphaColor::TRANSPARENT,
+            vello_gpu::WebGlRenderTarget::DrawingBuffer,
+            &WebGlTextureBindings::new(),
+            vello_gpu::WebGlRenderOptions::default(),
         )
         .unwrap();
 }
