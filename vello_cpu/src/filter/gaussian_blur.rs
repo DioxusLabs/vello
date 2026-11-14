@@ -324,24 +324,24 @@ pub(crate) fn convolve_x(
         for (d, &s) in middle.iter_mut().zip(src_row) {
             *d = f32::from(s);
         }
-        for (i, pixel) in left.chunks_exact_mut(4).enumerate() {
+        for (i, pixel) in left.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let x = i as i32 - i32::from(radius);
             pad_pixel(pixel, src_row, x, src_width, edge_mode);
         }
-        for (i, pixel) in right.chunks_exact_mut(4).enumerate() {
+        for (i, pixel) in right.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let x = i32::from(src_width) + i as i32;
             pad_pixel(pixel, src_row, x, src_width, edge_mode);
         }
 
         // Sum contributions from all kernel positions: output = Σ(weight[j] × pixel[x+j-radius])
         let dst_row = &mut dst_data[y * dst_stride..][..row_len];
-        let mut blocks = dst_row.chunks_exact_mut(BLOCK);
+        let (blocks, remainder) = dst_row.as_chunks_mut::<BLOCK>();
         let mut start = 0;
-        for out in &mut blocks {
+        for out in blocks {
             convolve_x_block::<BLOCK>(padded, kernel, start, out);
             start += BLOCK;
         }
-        for out in blocks.into_remainder().chunks_exact_mut(4) {
+        for out in remainder.as_chunks_mut::<4>().0 {
             convolve_x_block::<4>(padded, kernel, start, out);
             start += 4;
         }
@@ -425,13 +425,13 @@ pub(crate) fn convolve_y(
         let taps = &taps[..n_taps];
 
         let dst_row = &mut dst_data[y * dst_stride..][..row_len];
-        let mut blocks = dst_row.chunks_exact_mut(BLOCK);
+        let (blocks, remainder) = dst_row.as_chunks_mut::<BLOCK>();
         let mut start = 0;
-        for out in &mut blocks {
+        for out in blocks {
             convolve_y_block::<BLOCK>(src_data, taps, start, out);
             start += BLOCK;
         }
-        for out in blocks.into_remainder().chunks_exact_mut(4) {
+        for out in remainder.as_chunks_mut::<4>().0 {
             convolve_y_block::<4>(src_data, taps, start, out);
             start += 4;
         }
@@ -534,7 +534,7 @@ fn downscale_x(
 
         let src_bytes: &[u8] = bytemuck::cast_slice(copy);
         let dst_bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut row[1..interior_end]);
-        for (i, dst) in dst_bytes.chunks_exact_mut(4).enumerate() {
+        for (i, dst) in dst_bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             // Apply [1,3,3,1]/8 weights to pixels [x*2-1, x*2, x*2+1, x*2+2] with x = i + 1
             let p = &src_bytes[(i * 2 + 1) * 4..][..16];
             for (c, d) in dst.iter_mut().enumerate() {
@@ -690,7 +690,7 @@ fn upscale_x(
         if width > 2 {
             let src_bytes: &[u8] = bytemuck::cast_slice(copy);
             let dst_bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut row[2..(width - 1) * 2]);
-            for (i, dst) in dst_bytes.chunks_exact_mut(8).enumerate() {
+            for (i, dst) in dst_bytes.as_chunks_mut::<8>().0.iter_mut().enumerate() {
                 // Pixels [x-1, x, x+1] with x = i + 1
                 let p = &src_bytes[i * 4..][..12];
                 let (even, odd) = dst.split_at_mut(4);
