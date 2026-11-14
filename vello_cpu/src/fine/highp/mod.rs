@@ -96,7 +96,7 @@ impl<S: Simd> FineKernel<S> for F32Kernel {
         simd.vectorize(
             #[inline(always)]
             || {
-                for px in dest.chunks_exact_mut(4) {
+                for px in dest.as_chunks_mut::<4>().0 {
                     let luma = px[0] * 0.2126 + px[1] * 0.7152 + px[2] * 0.0722;
                     px[3] = luma.min(1.0);
                 }

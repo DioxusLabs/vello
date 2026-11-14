@@ -141,7 +141,7 @@ impl<S: Simd> FineKernel<S> for U8Kernel {
         simd.vectorize(
             #[inline(always)]
             || {
-                for px in dest.chunks_exact_mut(4) {
+                for px in dest.as_chunks_mut::<4>().0 {
                     let luma = u32::from(px[0]) * R + u32::from(px[1]) * G + u32::from(px[2]) * B;
                     px[3] = ((luma + (1 << 15)) >> 16) as u8;
                 }
