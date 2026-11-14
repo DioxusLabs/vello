@@ -7,7 +7,7 @@
 //! CSS filter functions and low-level SVG filter primitives. The API is designed
 //! to follow the W3C Filter Effects Module Level 1 specification.
 //!
-//! See: <https://drafts.fxtf.org/filter-effects/>
+//! See: <https://www.w3.org/TR/filter-effects-1/>
 //!
 //! ## Implementation Status
 //!
@@ -77,10 +77,9 @@ impl Filter {
     pub fn from_function(function: FilterFunction) -> Self {
         // Convert function to primitive
         let primitive = match function {
-            FilterFunction::Blur { radius } => FilterPrimitive::GaussianBlur {
-                std_deviation: radius,
-                edge_mode: EdgeMode::default(),
-            },
+            FilterFunction::Blur { radius } => {
+                FilterPrimitive::gaussian_blur(radius, EdgeMode::default())
+            }
             _ => unimplemented!("Filter function {:?} not supported", function),
         };
 
@@ -229,7 +228,7 @@ pub enum FilterEffect {
 /// These match the CSS Filter Effects specification and provide simple,
 /// commonly-used visual effects without needing to construct a filter graph.
 ///
-/// See: <https://drafts.fxtf.org/filter-effects/#filter-functions>
+/// See: <https://www.w3.org/TR/filter-effects-1/#filter-functions>
 #[derive(Debug, Clone)]
 pub enum FilterFunction {
     /// Gaussian blur effect.
@@ -327,7 +326,7 @@ pub enum FilterFunction {
 /// beyond the original image boundaries. This is particularly important for blur and
 /// convolution operations near edges.
 ///
-/// See: <https://drafts.fxtf.org/filter-effects/#element-attrdef-filter-primitive-edgemode>
+/// See: <https://www.w3.org/TR/filter-effects-1/#element-attrdef-fegaussianblur-edgemode>
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum EdgeMode {
     /// Extend by duplicating edge pixels (clamp to edge).
@@ -359,7 +358,7 @@ pub enum EdgeMode {
 /// filter primitives. They can be combined in a `FilterGraph` to create sophisticated
 /// visual effects.
 ///
-/// See: <https://drafts.fxtf.org/filter-effects/#FilterPrimitivesOverview>
+/// See: <https://www.w3.org/TR/filter-effects-1/#FilterPrimitivesOverview>
 #[derive(Debug, Clone, PartialEq)]
 pub enum FilterPrimitive {
     /// Generate a solid color fill.
@@ -372,22 +371,20 @@ pub enum FilterPrimitive {
     },
     /// Gaussian blur filter.
     ///
-    /// Applies a Gaussian blur using the specified standard deviation (σ).
-    /// The effective blur range (distance over which pixels are sampled) is
-    /// approximately 3 × `std_deviation`, as this captures ~99.7% of the
-    /// Gaussian distribution.
+    /// Applies a Gaussian blur with a standard deviation (σ) per axis, like SVG's
+    /// `stdDeviation="x y"`; equal values give a uniform blur. The effective blur
+    /// range (distance over which pixels are sampled) is approximately 3σ along
+    /// each axis, as this captures ~99.7% of the Gaussian distribution.
     GaussianBlur {
-        /// Standard deviation for the blur kernel. Larger values create more blur.
-        /// Must be non-negative. A value of 0 means no blur.
+        /// Standard deviation of the blur kernel along the x-axis. Larger values
+        /// create more blur. `0` or a negative value leaves the axis unblurred.
         ///
         /// This directly corresponds to the σ (sigma) parameter in the Gaussian
         /// function. The visible blur effect extends approximately 3σ in each direction.
-        ///
-        /// TODO: Per the W3C specification, this should support separate x and y values.
-        /// The spec allows `stdDeviation` to be either one number (applied to both axes)
-        /// or two numbers (first for x-axis, second for y-axis). Currently only uniform
-        /// blur is supported. Consider changing to `(f32, f32)` or a dedicated type.
-        std_deviation: f32,
+        std_deviation_x: f32,
+        /// Standard deviation of the blur kernel along the y-axis, see
+        /// `std_deviation_x`.
+        std_deviation_y: f32,
         /// Edge mode determining how pixels beyond the input bounds are handled.
         edge_mode: EdgeMode,
     },
@@ -397,7 +394,7 @@ pub enum FilterPrimitive {
     /// and compositing it with the original. This is a compound operation that
     /// combines multiple primitive operations into one.
     ///
-    /// See: <https://drafts.fxtf.org/filter-effects-2/#feDropShadowElement>
+    /// See: <https://www.w3.org/TR/filter-effects-1/#feDropShadowElement>
     DropShadow {
         /// Horizontal offset of the shadow in pixels. Positive values shift right.
         dx: f32,
@@ -574,12 +571,26 @@ pub enum FilterPrimitive {
 }
 
 impl FilterPrimitive {
+    /// A Gaussian blur with the same standard deviation along both axes.
+    pub fn gaussian_blur(std_deviation: f32, edge_mode: EdgeMode) -> Self {
+        Self::GaussianBlur {
+            std_deviation_x: std_deviation,
+            std_deviation_y: std_deviation,
+            edge_mode,
+        }
+    }
+
     /// The filter expansion of the primitive, see [`Filter::filter_expansion`].
     pub fn filter_expansion(&self) -> Rect {
         match self {
-            Self::GaussianBlur { std_deviation, .. } => {
-                let radius = blur_radius(*std_deviation);
-                Rect::new(-radius, -radius, radius, radius)
+            Self::GaussianBlur {
+                std_deviation_x,
+                std_deviation_y,
+                ..
+            } => {
+                let radius_x = blur_radius(*std_deviation_x);
+                let radius_y = blur_radius(*std_deviation_y);
+                Rect::new(-radius_x, -radius_y, radius_x, radius_y)
             }
             Self::Offset { dx, dy } => {
                 // Offset shifts pixels; expand bounds asymmetrically so shifted content isn't cut.
@@ -882,7 +893,7 @@ pub enum CompositeOperator {
 /// of two layers. Unlike compositing operators which deal with alpha, blend modes
 /// focus on color mixing while preserving the compositing behavior.
 ///
-/// See: <https://drafts.fxtf.org/compositing/#blending>
+/// See: <https://www.w3.org/TR/compositing-1/#blending>
 pub type BlendMode = peniko::Mix;
 
 /// Morphological operators for dilate/erode operations.

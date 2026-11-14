@@ -13,6 +13,8 @@ pub mod filter_elements;
 pub mod gradient;
 pub mod image;
 pub mod multi_image;
+#[cfg(target_arch = "wasm32")]
+pub mod navigation;
 pub mod path;
 #[cfg(target_arch = "wasm32")]
 pub mod performance;
@@ -168,7 +170,7 @@ impl RenderingContext for RenderContext {
     }
 
     fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32) {
-        self.fill_blurred_rounded_rect(rect, radius, std_dev, false);
+        self.fill_blurred_rounded_rect(rect, radius, std_dev);
     }
 
     fn glyph_run<'a>(
@@ -268,7 +270,7 @@ impl RenderingContext for Scene {
     }
 
     fn fill_blurred_rounded_rect(&mut self, rect: &Rect, radius: f32, std_dev: f32) {
-        self.fill_blurred_rounded_rect(rect, radius, std_dev, false);
+        self.fill_blurred_rounded_rect(rect, radius, std_dev);
     }
 
     fn glyph_run<'a>(

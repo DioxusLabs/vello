@@ -83,6 +83,7 @@ pub mod probe;
 pub mod record;
 pub mod rect;
 pub mod render_state;
+pub mod reset;
 pub mod simd;
 pub mod strip;
 pub mod strip_generator;
@@ -96,6 +97,7 @@ pub use fearless_simd;
 pub use peniko;
 pub use peniko::color;
 pub use peniko::kurbo;
+pub use reset::ResetOptions;
 pub use target::TargetInit;
 
 /// Public API types re-exported by Vello CPU and Vello GPU.
@@ -105,9 +107,10 @@ pub mod reexports {
         pub use crate::filter_effects;
         pub use crate::geometry;
         pub use crate::mask::Mask;
-        pub use crate::paint::{Image, ImageId, ImageSource, PaintType, Tint, TintMode};
+        pub use crate::paint::{Image, ImageSource, PaintType, TextureRegion, Tint, TintMode};
         pub use crate::pixmap::{PixelMetadata, Pixels, Pixmap};
         pub use crate::render_state::RenderState;
+        pub use crate::reset::ResetOptions;
         pub use crate::transforms::Transforms;
         pub use crate::{color, kurbo, peniko};
         pub use fearless_simd::Level;
@@ -124,10 +127,7 @@ pub mod reexports {
         pub use super::shared::*;
         pub use crate::TextureId;
         pub use crate::geometry::{RectU16, SizeU16};
-        pub use crate::multi_atlas::{
-            AllocationStrategy, AtlasConfig, AtlasError, AtlasId, AtlasLayerDiagnostics,
-            AtlasSpaceDiagnostics,
-        };
+        pub use crate::multi_atlas::{AllocationStrategy, AtlasConfig};
         #[cfg(feature = "probe")]
         pub use crate::probe::{
             ALL_PROBE_ELEMENTS, CellStatistics, Probe, ProbeFeature, ProbeResult,

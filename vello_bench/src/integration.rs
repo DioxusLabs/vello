@@ -90,7 +90,8 @@ pub fn filters(c: &mut Criterion) {
             let y = 20.0 + (i / COLUMNS) as f64 * 78.0;
             if let Some(std_deviation) = std_deviation {
                 ctx.push_filter_layer(Filter::from_primitive(FilterPrimitive::GaussianBlur {
-                    std_deviation,
+                    std_deviation_x: std_deviation,
+                    std_deviation_y: std_deviation,
                     edge_mode: EdgeMode::None,
                 }));
             }

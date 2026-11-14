@@ -12,6 +12,115 @@ Subheadings to categorize changes are `added, changed, deprecated, removed, fixe
 
 This release has an [MSRV][] of 1.89.
 
+### Added
+
+- `Scene::reset_with`, which resets a scene to a new size and can free the memory it grew in the same step, configured by `ResetOptions`. (by [@LaurenzV][])
+
+### Changed
+
+- Breaking change: `Scene::reset_and_resize` and `Scene::reset_and_shrink` have been removed in favor of `Scene::reset_with`. (by [@LaurenzV][])
+
+## [0.4.0][] - 2026-11-11
+
+This release has an [MSRV][] of 1.89.
+
+### Added
+
+- Renderer probing in the wgpu backend through `Renderer::probe`, with the `probe` feature. ([#2008][] by [@LaurenzV][])
+- `WebGlRenderer::begin_with_precompiled` adopts the canvas, WebGL context, and shader programs set up by the JavaScript module in `vello_gpu_shaders::webgl_bootstrap::JS_MODULE`, so compilation can start before the WebAssembly module is downloaded and instantiated. Programs that can't be adopted are reported with `WebGlError::IncompatiblePrecompiledShaders`. The module quotes the property names the renderer reads, so it can be bundled with minifiers that rename properties. `vello_gpu_shaders::webgl_bootstrap` is re-exported as `webgl_bootstrap`, and ships TypeScript declarations for the module as `DTS_MODULE`. ([#2014][], [#2031][], [#2042][], [#2070][] by [@grebmeg][], [@LaurenzV][])
+- `WebGlRendererInit::is_ready` for non-blocking readiness checks. WebGL initialization now flushes compile commands immediately, so compilation starts even if the caller keeps the main thread busy. ([#2014][] by [@grebmeg][])
+- `WebGlRenderer::shader_compilation_stats` reports the number of compiled shaders and the time spent compiling them. ([#1984][] by [@grebmeg][])
+- Rendering into an offscreen texture with the WebGL renderer, through `WebGlRenderer::create_texture_target` and `WebGlRenderTarget::Texture`. ([#2027][] by [@LaurenzV][])
+- Rendering a scene at an arbitrary, possibly negative, offset in the target through `RenderOptions::offset` and `WebGlRenderOptions::offset`. ([#2029][] by [@LaurenzV][])
+- `RenderSettings::with_pipeline_cache` for creating the wgpu pipelines with a `wgpu::PipelineCache`, which can substantially reduce startup times. ([#1981][] by [@taj-p][])
+- Binding a `wgpu::ExternalTexture`, such as a multi-planar YCbCr video frame, with `TextureBindings::insert_wgpu_external_texture`, with the `wgpu_external_texture` feature. ([#1995][] by [@grebmeg][])
+- The `blurred_rounded_rect`, `full_image_support`, `gradient_sweep` and `wgpu_external_texture` features (enabled by default through `all_shader_features`) for compiling unused paints out of the shaders, which reduces shader compilation time on low-end devices. Using a disabled feature panics at render time. ([#1978][], [#1994][] by [@LaurenzV][])
+- Anisotropic Gaussian blur: `FilterPrimitive::GaussianBlur` with a different standard deviation per axis, including blurs along one axis only. ([#1997][] by [@theashraf][])
+- `Renderer::reset_and_shrink` and `WebGlRenderer::reset_and_shrink` reset the renderer and its `Resources` and free the textures, buffers and caches they grew for earlier scenes, including all cached glyphs. ([#2078][] by [@LaurenzV][])
+- `Scene::reset_and_shrink` resets a scene and frees the memory it grew. ([#2078][] by [@LaurenzV][])
+- `Scene::fill_blurred_rounded_rect_in` for painting a blurred rounded rectangle inside an arbitrary path, with an `invert` parameter for painting the inverse (`1 - alpha`) of the blur coverage, enabling inset box shadows. ([#1718][] by [@nicoburns][])
+
+### Changed
+
+- Breaking change: `Renderer` now stores the device and queue, so `Renderer::new` and `Renderer::new_with` take the queue, and `Renderer::render` takes the target as a `RenderTarget` and the target initialization as part of `RenderOptions` instead of the device, queue, render size and views. `WgpuPendingProbe::try_finish` no longer takes the device, and `Renderer::create_depth_texture_view` is now a method. ([#2029][] by [@LaurenzV][])
+- Breaking change: `WebGlRenderer::render` takes a `WebGlRenderTarget` and `WebGlRenderOptions` instead of the render size and clear color. ([#2027][], [#2029][] by [@LaurenzV][])
+- Breaking change: The fields of `RenderSettings` are now private. Use `RenderSettings::with_level` and `RenderSettings::with_memory_settings` instead. ([#1981][] by [@taj-p][])
+- Breaking change: `TextureBindings::remove` returns the removed `TextureBinding` instead of a `TextureView`. ([#1995][] by [@grebmeg][])
+- Breaking change: The `invert` parameter of `Scene::fill_blurred_rounded_rect` has been removed. Use `Scene::fill_blurred_rounded_rect_in` with `invert` set to `true` instead. ([#1718][] by [@nicoburns][])
+- Breaking change: `WebGlError::ResourceTextureTooLarge` has been removed. The WebGL renderer now reports oversized resource textures as `WebGlError::Render(RenderError::ResourceTextureTooLarge)`, which names the overflowing `ResourceTexture`. ([#2058][] by [@LaurenzV][])
+- Breaking change: `MemorySettings::image_atlas_config` has been renamed to `glyph_atlas_config`, as the atlas now only holds cached glyphs. ([#2061][] by [@LaurenzV][])
+- Breaking change: `RenderError::MissingImage` has been renamed to `RenderError::MissingAtlasEntry`. ([#2061][] by [@LaurenzV][])
+- Breaking change: `ImageSource::OpaqueId`, `ImageSource::opaque_id`, and `ImageSource::opaque_id_with_transparency_hint` have been replaced by the hidden `ImageSource::Atlas`, which is only used internally for glyph caching. Use `ImageSource::external_texture` instead. ([#2061][] by [@LaurenzV][])
+- Rendering external textures that cover the whole texture is much faster. ([#1964][] by [@LaurenzV][])
+- Radial gradients are cheaper to render. ([#2003][] by [@LaurenzV][])
+- Reduced allocations when rendering with the wgpu backend. ([#1915][], [#2024][], [#2051][] by [@HigherOrderLogic][])
+
+### Removed
+
+- Breaking change: Uploading images into the renderer's image atlas. `Renderer::upload_image`, `Renderer::destroy_image`, `Renderer::atlas_texture`, `AtlasWriter`, `WebGlRenderer::upload_image`, `WebGlRenderer::destroy_image`, `WebGlRenderer::atlas_texture`, `WebGlRenderer::atlas_info`, `WebGlAtlasWriter`, `WebGlTextureWithDimensions`, `AtlasTextureInfo`, and `RenderError::AtlasError` have been removed, and `AtlasError`, `AtlasId`, `AtlasLayerDiagnostics`, `AtlasSpaceDiagnostics`, and `ImageId` are no longer re-exported. Bind images as external textures with `ImageSource::external_texture` instead. The atlas is now only used for glyph caching. ([#2061][] by [@LaurenzV][])
+
+### Fixed
+
+- Bilinear and bicubic image sampling near the edges of an image now matches Vello CPU. ([#1963][] by [@LaurenzV][])
+- The wgpu renderer returns `RenderError::MissingAtlasEntry` instead of panicking when a scene references an atlas entry that doesn't exist. ([#2034][] by [@LaurenzV][])
+- The wgpu renderer returns `RenderError::ResourceTextureTooLarge` instead of panicking when a scene's alpha, paint, gradient or filter data doesn't fit into the supported texture dimensions. ([#2058][] by [@LaurenzV][])
+- The WebGL renderer returns `RenderError::ResourceTextureTooLarge` instead of panicking when a scene's filter data doesn't fit into the supported texture dimensions. ([#2058][] by [@LaurenzV][])
+- The WebGL renderer recovers after a scene's gradients don't fit into the gradient texture, instead of returning the same error for every following frame. ([#2058][] by [@LaurenzV][])
+- A potential division by zero in `clip_color` for gray colors in the `Color` and `Luminosity` blend modes. ([#2000][] by [@zlstringham][])
+
+## [0.3.0][] - 2026-10-02
+
+This release has an [MSRV][] of 1.89.
+
+**As part of this release, "Vello Hybrid" has been renamed into "Vello GPU"**.
+
+### Added
+
+- An `unminified` feature in `vello_gpu_shaders` for readable shader output. ([#1851][] by [@grebmeg][])
+- Non-blocking WebGL initialization through `WebGlRenderer::begin` and `begin_with`. ([#1823][] by [@grebmeg][])
+- `Scene::push_clip_rect` for non-isolated rectangular clipping. ([#1916][] by [@LaurenzV][])
+- Support for `ImageSampler::alpha`. ([#1880][] by [@LaurenzV][])
+
+### Changed
+
+- Breaking change: Renamed the `vello_hybrid` crate to `vello_gpu`. `HybridGlyphRunBackend` is now `GpuGlyphRunBackend`. ([#1883][] by [@grebmeg][], [#1918][] by [@LaurenzV][])
+- Breaking change: Updated `wgpu` to v30 and `fearless_simd` to v0.7.0. ([#1909][], [#1853][] by [@LaurenzV][])
+- Breaking change: External textures now use `Scene::set_paint`, replacing `draw_texture_rects` and adding support for arbitrary shapes, extend modes, and transparency hints. ([#1812][], [#1813][], [#1824][] by [@LaurenzV][])
+- Breaking change: Depth buffering is now optional, with caller-owned depth textures in wgpu and a `use_depth_buffer` argument in WebGL. ([#1808][], [#1810][] by [@grebmeg][])
+- Breaking change: Rendering now accepts configurable target clears through `TargetInit` in wgpu and a clear color in WebGL. ([#1869][] by [@LaurenzV][])
+- Breaking change: WebGL operations now return structured `WebGlError` results. ([#1892][] by [@LaurenzV][], [#1921][] by [@grebmeg][])
+- Breaking change: `RenderSize`, `RenderTargetConfig`, atlas configuration, and related dimensions now use `u16`. ([#1826][], [#1891][] by [@LaurenzV][])
+- Breaking change: Image atlases now use individual 2D textures, and `atlas_texture` takes an `AtlasId`. ([#1859][] by [@LaurenzV][])
+- Breaking change: WebGL probes now support configurable features, depth-buffer testing, and per-cell statistics. ([#1900][], [#1901][], [#1908][] by [@LaurenzV][])
+- Breaking change: Renamed `Scene::pop_clip_path` to `pop_clip`. ([#1942][] by [@LaurenzV][])
+- Breaking change: `GlyphRunBuilder::fill_glyphs` and `stroke_glyphs` now return `Result<(), glifo::GlyphRenderError>`. ([#1944][] by [@LaurenzV][])
+- Expanded shared type re-exports. ([#1881][] by [@LaurenzV][])
+- WebGL context creation now requests `failIfMajorPerformanceCaveat`. ([#1806][] by [@LaurenzV][])
+- Bitmap glyphs now consistently use bilinear sampling (`ImageQuality::Medium`) instead of switching to bicubic sampling when downscaled. ([#1970][] by [@LaurenzV][])
+
+### Fixed
+
+- Fully transparent draws are no longer skipped, fixing missing output from filters such as flood effects. ([#1966][] by [@AdrianEddy][], [@LaurenzV][])
+- The `std` feature no longer implicitly enables `wgpu`. ([#1822][] by [@taj-p][])
+- Safari 15 probe crashes and incorrect filter rendering. ([#1814][], [#1821][] by [@LaurenzV][])
+- WebGL hangs on affected Intel GPUs. ([#1830][] by [@LaurenzV][])
+- Incorrect layer rendering and probe failures on affected Apple Silicon/Chrome versions. ([#1864][] by [@LaurenzV][])
+- Removed an artificial image-sampling offset. ([#1878][] by [@LaurenzV][])
+- Gradient cache collisions between premultiplied and unpremultiplied alpha interpolation. ([#1932][] by [@LaurenzV][])
+- Draws with non-invertible paint transforms are now skipped. ([#1949][] by [@grebmeg][])
+- Resetting a scene now also resets the aliasing threshold. ([#1945][] by [@LaurenzV][])
+- Incorrect placement of non-Apple `sbix` glyphs caused by the Apple Color Emoji workaround. ([#1936][] by [@LaurenzV][])
+- Incorrect `sbix` glyph placement caused by sign errors in bearing offsets. ([#1939][] by [@LaurenzV][])
+
+### Optimized
+
+- Rectangle rendering. ([#1962][] by [@nicoburns][])
+- WebGL strip rendering through indexed instanced draws and `WEBGL_provoking_vertex` support. ([#1805][], [#1827][] by [@LaurenzV][])
+- Reduced embedded shader size through compaction and minification. ([#1831][] by [@LaurenzV][], [#1833][], [#1846][] by [@grebmeg][])
+- Reduced WebGL state management overhead. ([#1874][], [#1879][], [#1911][] by [@LaurenzV][])
+- Reduced wgpu strip-data uploads and strip-storage allocations. ([#1896][], [#1897][] by [@HigherOrderLogic][])
+- Rectangle rendering under rectangular clips. ([#1926][] by [@LaurenzV][])
+
 ## [0.2.0][] - 2026-08-07
 
 This release has an [MSRV][] of 1.88.
@@ -202,20 +311,24 @@ This is the initial release. No changelog was kept for this release.
 See also the [vello_cpu 0.0.4](../vello_cpu/CHANGELOG.md#004---2025-10-17) and [vello_common 0.0.4](../vello_common/CHANGELOG.md#004---2025-10-17) releases.
 
 [@DJMcNab]: https://github.com/DJMcNab
+[@AdrianEddy]: https://github.com/AdrianEddy
 [@b0nes164]: https://github.com/b0nes164
 [@dipeshbabu]: https://github.com/dipeshbabu
 [@grebmeg]: https://github.com/grebmeg
+[@HigherOrderLogic]: https://github.com/HigherOrderLogic
 [@jesses-canva]: https://github.com/jesses-canva
 [@jrmoulton]: https://github.com/jrmoulton
 [@LaurenzV]: https://github.com/LaurenzV
 [@nicoburns]: https://github.com/nicoburns
 [@oscargus]: https://github.com/oscargus
 [@taj-p]: https://github.com/taj-p
+[@theashraf]: https://github.com/theashraf
 [@tomcur]: https://github.com/tomcur
 [@tronical]: https://github.com/tronical
 [@upsuper]: https://github.com/upsuper
 [@waywardmonkeys]: https://github.com/waywardmonkeys
 [@xStrom]: https://github.com/xStrom
+[@zlstringham]: https://github.com/zlstringham
 
 [#1203]: https://github.com/linebender/vello/pull/1203
 [#1349]: https://github.com/linebender/vello/pull/1349
@@ -283,6 +396,7 @@ See also the [vello_cpu 0.0.4](../vello_cpu/CHANGELOG.md#004---2025-10-17) and [
 [#1691]: https://github.com/linebender/vello/pull/1691
 [#1697]: https://github.com/linebender/vello/pull/1697
 [#1715]: https://github.com/linebender/vello/pull/1715
+[#1718]: https://github.com/linebender/vello/pull/1718
 [#1720]: https://github.com/linebender/vello/pull/1720
 [#1726]: https://github.com/linebender/vello/pull/1726
 [#1734]: https://github.com/linebender/vello/pull/1734
@@ -302,8 +416,85 @@ See also the [vello_cpu 0.0.4](../vello_cpu/CHANGELOG.md#004---2025-10-17) and [
 [#1794]: https://github.com/linebender/vello/pull/1794
 [#1800]: https://github.com/linebender/vello/pull/1800
 [#1801]: https://github.com/linebender/vello/pull/1801
+[#1805]: https://github.com/linebender/vello/pull/1805
+[#1806]: https://github.com/linebender/vello/pull/1806
+[#1808]: https://github.com/linebender/vello/pull/1808
+[#1810]: https://github.com/linebender/vello/pull/1810
+[#1812]: https://github.com/linebender/vello/pull/1812
+[#1813]: https://github.com/linebender/vello/pull/1813
+[#1814]: https://github.com/linebender/vello/pull/1814
+[#1821]: https://github.com/linebender/vello/pull/1821
+[#1822]: https://github.com/linebender/vello/pull/1822
+[#1823]: https://github.com/linebender/vello/pull/1823
+[#1824]: https://github.com/linebender/vello/pull/1824
+[#1826]: https://github.com/linebender/vello/pull/1826
+[#1827]: https://github.com/linebender/vello/pull/1827
+[#1830]: https://github.com/linebender/vello/pull/1830
+[#1831]: https://github.com/linebender/vello/pull/1831
+[#1833]: https://github.com/linebender/vello/pull/1833
+[#1846]: https://github.com/linebender/vello/pull/1846
+[#1851]: https://github.com/linebender/vello/pull/1851
+[#1853]: https://github.com/linebender/vello/pull/1853
+[#1859]: https://github.com/linebender/vello/pull/1859
+[#1864]: https://github.com/linebender/vello/pull/1864
+[#1869]: https://github.com/linebender/vello/pull/1869
+[#1874]: https://github.com/linebender/vello/pull/1874
+[#1878]: https://github.com/linebender/vello/pull/1878
+[#1879]: https://github.com/linebender/vello/pull/1879
+[#1880]: https://github.com/linebender/vello/pull/1880
+[#1881]: https://github.com/linebender/vello/pull/1881
+[#1883]: https://github.com/linebender/vello/pull/1883
+[#1891]: https://github.com/linebender/vello/pull/1891
+[#1892]: https://github.com/linebender/vello/pull/1892
+[#1896]: https://github.com/linebender/vello/pull/1896
+[#1897]: https://github.com/linebender/vello/pull/1897
+[#1900]: https://github.com/linebender/vello/pull/1900
+[#1901]: https://github.com/linebender/vello/pull/1901
+[#1908]: https://github.com/linebender/vello/pull/1908
+[#1909]: https://github.com/linebender/vello/pull/1909
+[#1911]: https://github.com/linebender/vello/pull/1911
+[#1915]: https://github.com/linebender/vello/pull/1915
+[#1916]: https://github.com/linebender/vello/pull/1916
+[#1918]: https://github.com/linebender/vello/pull/1918
+[#1921]: https://github.com/linebender/vello/pull/1921
+[#1926]: https://github.com/linebender/vello/pull/1926
+[#1932]: https://github.com/linebender/vello/pull/1932
+[#1936]: https://github.com/linebender/vello/pull/1936
+[#1939]: https://github.com/linebender/vello/pull/1939
+[#1942]: https://github.com/linebender/vello/pull/1942
+[#1944]: https://github.com/linebender/vello/pull/1944
+[#1945]: https://github.com/linebender/vello/pull/1945
+[#1949]: https://github.com/linebender/vello/pull/1949
+[#1962]: https://github.com/linebender/vello/pull/1962
+[#1963]: https://github.com/linebender/vello/pull/1963
+[#1964]: https://github.com/linebender/vello/pull/1964
+[#1966]: https://github.com/linebender/vello/pull/1966
+[#1970]: https://github.com/linebender/vello/pull/1970
+[#1978]: https://github.com/linebender/vello/pull/1978
+[#1981]: https://github.com/linebender/vello/pull/1981
+[#1984]: https://github.com/linebender/vello/pull/1984
+[#1994]: https://github.com/linebender/vello/pull/1994
+[#1995]: https://github.com/linebender/vello/pull/1995
+[#1997]: https://github.com/linebender/vello/pull/1997
+[#2000]: https://github.com/linebender/vello/pull/2000
+[#2003]: https://github.com/linebender/vello/pull/2003
+[#2008]: https://github.com/linebender/vello/pull/2008
+[#2014]: https://github.com/linebender/vello/pull/2014
+[#2024]: https://github.com/linebender/vello/pull/2024
+[#2027]: https://github.com/linebender/vello/pull/2027
+[#2029]: https://github.com/linebender/vello/pull/2029
+[#2031]: https://github.com/linebender/vello/pull/2031
+[#2034]: https://github.com/linebender/vello/pull/2034
+[#2042]: https://github.com/linebender/vello/pull/2042
+[#2051]: https://github.com/linebender/vello/pull/2051
+[#2058]: https://github.com/linebender/vello/pull/2058
+[#2061]: https://github.com/linebender/vello/pull/2061
+[#2070]: https://github.com/linebender/vello/pull/2070
+[#2078]: https://github.com/linebender/vello/pull/2078
 
-[Unreleased]: https://github.com/linebender/vello/compare/sparse-strips-v0.2.0...HEAD
+[Unreleased]: https://github.com/linebender/vello/compare/sparse-strips-v0.4.0...HEAD
+[0.4.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.3.0...sparse-strips-v0.4.0
+[0.3.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.2.0...sparse-strips-v0.3.0
 [0.2.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.1.0...sparse-strips-v0.2.0
 [0.1.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.0.9...sparse-strips-v0.1.0
 [0.0.9]: https://github.com/linebender/vello/compare/sparse-strips-v0.0.8...sparse-strips-v0.0.9

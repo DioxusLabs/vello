@@ -12,6 +12,81 @@ Subheadings to categorize changes are `added, changed, deprecated, removed, fixe
 
 This release has an [MSRV][] of 1.89.
 
+### Added
+
+- `RenderContext::reset_with`, which resets a render context to a new size and can free the memory it grew in the same step, configured by `ResetOptions`. (by [@LaurenzV][])
+
+### Changed
+
+- Breaking change: `RenderContext::reset_and_resize` and `RenderContext::reset_and_shrink` have been removed in favor of `RenderContext::reset_with`. (by [@LaurenzV][])
+
+## [0.4.0][] - 2026-11-11
+
+This release has an [MSRV][] of 1.89.
+
+### Added
+
+- Anisotropic Gaussian blur: `FilterPrimitive::GaussianBlur` with a different standard deviation per axis, including blurs along one axis only. ([#1997][] by [@theashraf][])
+- `RenderContext::reset_and_shrink` resets a render context and frees the memory it grew. ([#2078][] by [@LaurenzV][])
+- `RenderContext::fill_blurred_rounded_rect_in` for painting a blurred rounded rectangle inside an arbitrary path, with an `invert` parameter for painting the inverse (`1 - alpha`) of the blur coverage, enabling inset box shadows. ([#1718][] by [@nicoburns][])
+
+### Changed
+
+- Breaking change: `RasterizerSettings::offset` is now an `(i32, i32)`, so scenes can also be rendered at negative offsets. The offset only applies to the scene; `TargetInit` still applies to the whole pixmap. ([#2028][] by [@LaurenzV][])
+- Breaking change: The `invert` parameter of `RenderContext::fill_blurred_rounded_rect` has been removed. Use `RenderContext::fill_blurred_rounded_rect_in` with `invert` set to `true` instead. ([#1718][] by [@nicoburns][])
+- Breaking change: `ImageSource::OpaqueId`, `ImageSource::opaque_id`, and `ImageSource::opaque_id_with_transparency_hint` have been replaced by the hidden `ImageSource::Atlas`, which is only used internally for glyph caching. Use `ImageSource::Pixmap` instead. ([#2061][] by [@LaurenzV][])
+- Breaking change: Updated to `fearless_simd` 1.0, which is used for `Level`. ([#1987][] by [@LaurenzV][])
+- Radial gradients are cheaper to render. ([#2003][] by [@LaurenzV][])
+- The multi-threaded renderer no longer busy-waits while flushing, which reduces CPU usage. ([#2073][] by [@LaurenzV][])
+
+### Removed
+
+- Breaking change: The image registry (`Resources::register_image`, `Resources::destroy_image`, `Resources::resolve_image`, and `Resources::clear_images`), and the `ImageId` re-export. Use `ImageSource::Pixmap` instead. ([#2061][] by [@LaurenzV][])
+
+### Fixed
+
+- `RenderContext::reset` now clears the filter effect set with `set_filter_effect`. ([#2075][] by [@LaurenzV][])
+- `Color` and `Luminosity` blending rendering some gray colors as black, caused by a division by zero in `clip_color`. ([#2000][] by [@zlstringham][])
+- Masked source-over drawing in the `u8` pipeline no longer makes opaque destinations slightly transparent. ([#2032][] by [@LaurenzV][])
+
+## [0.3.0][] - 2026-10-02
+
+This release has an [MSRV][] of 1.89.
+
+### Added
+
+- `RenderContext::push_clip_rect` for non-isolated rectangular clipping. ([#1916][] by [@LaurenzV][])
+- Support for `ImageSampler::alpha`. ([#1880][] by [@LaurenzV][])
+
+### Changed
+
+- Breaking change: Replaced `CompositeMode` with `TargetInit`, adding configurable target clears. ([#1866][] by [@LaurenzV][])
+- Breaking change: Renamed `RenderContext::pop_clip_path` to `pop_clip`. ([#1942][] by [@LaurenzV][])
+- Breaking change: `GlyphRunBuilder::fill_glyphs` and `stroke_glyphs` now return `Result<(), glifo::GlyphRenderError>`. ([#1944][] by [@LaurenzV][])
+- Breaking change: Updated `fearless_simd` to v0.7.0. ([#1853][] by [@LaurenzV][])
+- Breaking change: Reorganized shared type re-exports and removed the crate-root `Paint` re-export. ([#1881][] by [@LaurenzV][])
+- Root-level blend operations are now isolated from the target background. ([#1865][] by [@LaurenzV][])
+- Bitmap glyphs now consistently use bilinear sampling (`ImageQuality::Medium`) instead of switching to bicubic sampling when downscaled. ([#1970][] by [@LaurenzV][])
+
+### Fixed
+
+- Image-sampling errors near texel boundaries with `Repeat`, `Reflect`, and bilinear/bicubic filtering. ([#1946][], [#1950][] by [@LaurenzV][])
+- Scene contents being cut off when compositing over a background in the u8 pipeline. ([#1933][] by [@LaurenzV][])
+- Layer opacity is now clamped to the range 0 to 1. ([#1856][] by [@LaurenzV][])
+- Rendering on big-endian targets. ([#1845][] by [@LaurenzV][])
+- Gradient cache collisions between premultiplied and unpremultiplied alpha interpolation. ([#1932][] by [@LaurenzV][])
+- Draws with non-invertible paint transforms are now skipped. ([#1949][] by [@grebmeg][])
+- Resetting a render context now also resets the aliasing threshold. ([#1945][] by [@LaurenzV][])
+- Incorrect placement of non-Apple `sbix` glyphs caused by the Apple Color Emoji workaround. ([#1936][] by [@LaurenzV][])
+- Incorrect `sbix` glyph placement caused by sign errors in bearing offsets. ([#1939][] by [@LaurenzV][])
+
+### Optimized
+
+- Rectangle rendering. ([#1962][] by [@nicoburns][])
+- Rectangle rendering in multi-threaded contexts. ([#1924][] by [@LaurenzV][])
+- Rectangle rendering under rectangular clips. ([#1926][] by [@LaurenzV][])
+- Transparency hints for rendered pixmaps. ([#1867][] by [@LaurenzV][])
+
 ## [0.2.0][] - 2026-08-07
 
 This release has an [MSRV][] of 1.88.
@@ -217,11 +292,13 @@ See also the [vello_common 0.0.1](../vello_common/CHANGELOG.md#001---2025-05-10)
 [@oscargus]: https://github.com/oscargus
 [@ShiroKSH]: https://github.com/ShiroKSH
 [@taj-p]: https://github.com/taj-p
+[@theashraf]: https://github.com/theashraf
 [@tomcur]: https://github.com/tomcur
 [@tronical]: https://github.com/tronical
 [@upsuper]: https://github.com/upsuper
 [@waywardmonkeys]: https://github.com/waywardmonkeys
 [@yezhizhen]: https://github.com/yezhizhen
+[@zlstringham]: https://github.com/zlstringham
 
 [#1159]: https://github.com/linebender/vello/pull/1159
 [#1203]: https://github.com/linebender/vello/pull/1203
@@ -267,6 +344,7 @@ See also the [vello_common 0.0.1](../vello_common/CHANGELOG.md#001---2025-05-10)
 [#1703]: https://github.com/linebender/vello/pull/1703
 [#1705]: https://github.com/linebender/vello/pull/1705
 [#1715]: https://github.com/linebender/vello/pull/1715
+[#1718]: https://github.com/linebender/vello/pull/1718
 [#1720]: https://github.com/linebender/vello/pull/1720
 [#1723]: https://github.com/linebender/vello/pull/1723
 [#1726]: https://github.com/linebender/vello/pull/1726
@@ -276,8 +354,43 @@ See also the [vello_common 0.0.1](../vello_common/CHANGELOG.md#001---2025-05-10)
 [#1763]: https://github.com/linebender/vello/pull/1763
 [#1787]: https://github.com/linebender/vello/pull/1787
 [#1803]: https://github.com/linebender/vello/pull/1803
+[#1845]: https://github.com/linebender/vello/pull/1845
+[#1853]: https://github.com/linebender/vello/pull/1853
+[#1856]: https://github.com/linebender/vello/pull/1856
+[#1865]: https://github.com/linebender/vello/pull/1865
+[#1866]: https://github.com/linebender/vello/pull/1866
+[#1867]: https://github.com/linebender/vello/pull/1867
+[#1880]: https://github.com/linebender/vello/pull/1880
+[#1881]: https://github.com/linebender/vello/pull/1881
+[#1916]: https://github.com/linebender/vello/pull/1916
+[#1924]: https://github.com/linebender/vello/pull/1924
+[#1926]: https://github.com/linebender/vello/pull/1926
+[#1932]: https://github.com/linebender/vello/pull/1932
+[#1933]: https://github.com/linebender/vello/pull/1933
+[#1936]: https://github.com/linebender/vello/pull/1936
+[#1939]: https://github.com/linebender/vello/pull/1939
+[#1942]: https://github.com/linebender/vello/pull/1942
+[#1944]: https://github.com/linebender/vello/pull/1944
+[#1945]: https://github.com/linebender/vello/pull/1945
+[#1946]: https://github.com/linebender/vello/pull/1946
+[#1949]: https://github.com/linebender/vello/pull/1949
+[#1950]: https://github.com/linebender/vello/pull/1950
+[#1962]: https://github.com/linebender/vello/pull/1962
+[#1970]: https://github.com/linebender/vello/pull/1970
+[#1987]: https://github.com/linebender/vello/pull/1987
+[#1997]: https://github.com/linebender/vello/pull/1997
+[#2000]: https://github.com/linebender/vello/pull/2000
+[#2003]: https://github.com/linebender/vello/pull/2003
+[#2028]: https://github.com/linebender/vello/pull/2028
+[#2032]: https://github.com/linebender/vello/pull/2032
+[#2061]: https://github.com/linebender/vello/pull/2061
+[#2073]: https://github.com/linebender/vello/pull/2073
+[#2075]: https://github.com/linebender/vello/pull/2075
+[#2078]: https://github.com/linebender/vello/pull/2078
 
-[Unreleased]: https://github.com/linebender/vello/compare/sparse-strips-v0.2.0...HEAD
+[Unreleased]: https://github.com/linebender/vello/compare/sparse-strips-v0.4.0...HEAD
+[0.4.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.3.0...sparse-strips-v0.4.0
+[0.3.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.2.0...sparse-strips-v0.3.0
 [0.2.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.1.0...sparse-strips-v0.2.0
 [0.1.0]: https://github.com/linebender/vello/compare/sparse-strips-v0.0.9...sparse-strips-v0.1.0
 [0.0.9]: https://github.com/linebender/vello/compare/sparse-strips-v0.0.8...sparse-strips-v0.0.9

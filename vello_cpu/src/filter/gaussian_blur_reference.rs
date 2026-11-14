@@ -4,7 +4,7 @@
 //! The original scalar Gaussian blur, kept as a test oracle for the optimized implementation
 //! in `gaussian_blur.rs`, which must produce bit-identical output.
 
-use vello_common::filter::gaussian_blur::DecimationSizer;
+use vello_common::filter::gaussian_blur::{DecimationAxes, DecimationSizer, decimation_levels};
 use vello_common::filter_effects::EdgeMode;
 use vello_common::peniko::color::PremulRgba8;
 #[cfg(not(feature = "std"))]
@@ -13,48 +13,44 @@ use vello_common::pixmap::Pixmap;
 
 /// Apply Gaussian blur using multi-scale decimation and upsampling.
 ///
-/// Uses a precomputed decimation plan and kernel for optimal performance.
-/// Operates in-place using a single pixmap buffer with logical dimension tracking
-/// to minimize memory allocations. For `n_decimations=0`, applies direct convolution.
+/// Uses a precomputed decimation plan and kernel per axis for optimal performance.
+/// Operates in-place using a single pixmap buffer with logical dimension tracking to
+/// minimize memory allocations. With no decimation levels, applies direct convolution.
 ///
 /// The `scratch` buffer is used for separable convolution and must be at least as
 /// large as the source pixmap.
 pub(super) fn apply_blur(
     pixmap: &mut Pixmap,
     scratch: &mut Pixmap,
-    n_decimations: usize,
-    kernel: &[f32],
+    n_decimations_x: usize,
+    n_decimations_y: usize,
+    kernel_x: &[f32],
+    kernel_y: &[f32],
     edge_mode: EdgeMode,
 ) {
-    let radius = (kernel.len() / 2) as u8;
+    let levels = decimation_levels(n_decimations_x, n_decimations_y);
     let width = pixmap.width();
     let height = pixmap.height();
-
-    // Small blur: apply direct convolution at full resolution
-    if n_decimations == 0 {
-        convolve(pixmap, scratch, width, height, kernel, radius, edge_mode);
-        return;
-    }
 
     // Track logical dimensions through decimation (physical buffer stays the same size)
     let mut sizer = DecimationSizer::new(width, height);
 
-    // Downsample n times (each step reduces resolution by 2×)
-    for _ in 0..n_decimations {
+    // Downsample level by level, finest first
+    for axes in levels.clone() {
         let (w, h) = sizer.current();
-        downscale(pixmap, w, h, edge_mode);
-        sizer.downscale();
+        downscale_axes(pixmap, w, h, axes, edge_mode);
+        sizer.downscale_axes(axes);
     }
 
     // Apply the reduced blur at the coarsest resolution
     let (w, h) = sizer.current();
-    convolve(pixmap, scratch, w, h, kernel, radius, edge_mode);
+    convolve(pixmap, scratch, w, h, kernel_x, kernel_y, edge_mode);
 
-    // Upsample back to original resolution (each step doubles resolution by 2×)
-    for _ in 0..n_decimations {
+    // Upsample back to original resolution, undoing the levels coarsest first
+    for axes in levels.rev() {
         let (w, h) = sizer.current();
-        upscale(pixmap, w, h, edge_mode);
-        sizer.upscale();
+        upscale_axes(pixmap, w, h, axes, edge_mode);
+        sizer.upscale_axes(axes);
     }
 
     debug_assert_eq!(
@@ -66,20 +62,93 @@ pub(super) fn apply_blur(
 
 /// Apply separable Gaussian convolution with logical dimensions.
 ///
-/// Performs horizontal blur followed by vertical blur. Works with a logical view
-/// of the pixmap, using only the top-left region defined by width × height.
-/// The `temp` buffer is provided by the caller to avoid allocations.
-pub(super) fn convolve(
+/// Performs horizontal blur followed by vertical blur, each with its own kernel; an
+/// identity kernel (a single weight) skips its pass. Works with a logical view of the
+/// pixmap, using only the top-left region defined by width × height. The `scratch`
+/// buffer is provided by the caller to avoid allocations.
+fn convolve(
     src: &mut Pixmap,
     scratch: &mut Pixmap,
     width: u16,
     height: u16,
-    kernel: &[f32],
-    radius: u8,
+    kernel_x: &[f32],
+    kernel_y: &[f32],
     edge_mode: EdgeMode,
 ) {
-    convolve_x(src, scratch, width, height, kernel, radius, edge_mode);
-    convolve_y(scratch, src, width, height, kernel, radius, edge_mode);
+    let radius_x = (kernel_x.len() / 2) as u8;
+    let radius_y = (kernel_y.len() / 2) as u8;
+
+    match (kernel_x.len() > 1, kernel_y.len() > 1) {
+        (true, true) => {
+            convolve_x(src, scratch, width, height, kernel_x, radius_x, edge_mode);
+            convolve_y(scratch, src, width, height, kernel_y, radius_y, edge_mode);
+        }
+        (true, false) => {
+            convolve_x(src, scratch, width, height, kernel_x, radius_x, edge_mode);
+            copy_region(scratch, src, width, height);
+        }
+        (false, true) => {
+            convolve_y(src, scratch, width, height, kernel_y, radius_y, edge_mode);
+            copy_region(scratch, src, width, height);
+        }
+        (false, false) => {}
+    }
+}
+
+/// Copy the top-left `width × height` region from `src` to `dst`.
+fn copy_region(src: &Pixmap, dst: &mut Pixmap, width: u16, height: u16) {
+    let src_stride = usize::from(src.width());
+    let dst_stride = usize::from(dst.width());
+    let width = usize::from(width);
+
+    for y in 0..usize::from(height) {
+        let src_row = &src.data()[y * src_stride..y * src_stride + width];
+        dst.data_mut()[y * dst_stride..y * dst_stride + width].copy_from_slice(src_row);
+    }
+}
+
+/// Downsample the given axes by 2x, see [`downscale`].
+fn downscale_axes(
+    src: &mut Pixmap,
+    src_width: u16,
+    src_height: u16,
+    axes: DecimationAxes,
+    edge_mode: EdgeMode,
+) -> (u16, u16) {
+    match axes {
+        DecimationAxes::Both => downscale(src, src_width, src_height, edge_mode),
+        DecimationAxes::X => {
+            let dst_width = src_width.div_ceil(2);
+            downscale_x(src, src_width, src_height, dst_width, edge_mode);
+            (dst_width, src_height)
+        }
+        DecimationAxes::Y => {
+            let dst_height = src_height.div_ceil(2);
+            downscale_y(src, src_width, src_height, dst_height, edge_mode);
+            (src_width, dst_height)
+        }
+    }
+}
+
+/// Upsample the given axes by 2x, see [`upscale`].
+fn upscale_axes(
+    src: &mut Pixmap,
+    src_width: u16,
+    src_height: u16,
+    axes: DecimationAxes,
+    edge_mode: EdgeMode,
+) -> (u16, u16) {
+    match axes {
+        DecimationAxes::Both => upscale(src, src_width, src_height, edge_mode),
+        DecimationAxes::X => {
+            upscale_x(src, src_width, src_height, edge_mode);
+            (src_width * 2, src_height)
+        }
+        DecimationAxes::Y => {
+            upscale_y(src, src_width, src_height, edge_mode);
+            (src_width, src_height * 2)
+        }
+    }
 }
 
 /// Apply horizontal blur pass (1D convolution along x-axis).
@@ -87,7 +156,7 @@ pub(super) fn convolve(
 /// For each output pixel, computes a weighted sum of horizontally neighboring pixels
 /// using the Gaussian kernel. Handles edge cases according to the specified edge mode.
 /// Writes results to a destination buffer to avoid overwriting source data.
-pub(super) fn convolve_x(
+fn convolve_x(
     src: &Pixmap,
     dst: &mut Pixmap,
     src_width: u16,
@@ -136,7 +205,7 @@ pub(super) fn convolve_x(
 /// For each output pixel, computes a weighted sum of vertically neighboring pixels
 /// using the Gaussian kernel. Handles edge cases according to the specified edge mode.
 /// Writes results to a destination buffer to avoid overwriting source data.
-pub(super) fn convolve_y(
+fn convolve_y(
     src: &Pixmap,
     dst: &mut Pixmap,
     src_width: u16,
@@ -184,12 +253,7 @@ pub(super) fn convolve_y(
 ///
 /// Performs horizontal and vertical decimation in sequence. Returns the new
 /// logical dimensions (ceil(width/2), ceil(height/2)).
-pub(super) fn downscale(
-    src: &mut Pixmap,
-    src_width: u16,
-    src_height: u16,
-    edge_mode: EdgeMode,
-) -> (u16, u16) {
+fn downscale(src: &mut Pixmap, src_width: u16, src_height: u16, edge_mode: EdgeMode) -> (u16, u16) {
     let dst_width = src_width.div_ceil(2);
     let dst_height = src_height.div_ceil(2);
     downscale_x(src, src_width, src_height, dst_width, edge_mode);
@@ -203,7 +267,7 @@ pub(super) fn downscale(
 ///
 /// Reduces width by 2x while applying a binomial blur kernel. The \[1,3,3,1\] weights
 /// approximate a Gaussian and contribute variance=0.75 before the 2x downsampling.
-pub(super) fn downscale_x(
+fn downscale_x(
     src: &mut Pixmap,
     src_width: u16,
     src_height: u16,
@@ -237,7 +301,7 @@ pub(super) fn downscale_x(
 ///
 /// Reduces logical height by 2x while applying a binomial blur kernel.
 /// Operates in-place by writing to the beginning of the same buffer.
-pub(super) fn downscale_y(
+fn downscale_y(
     src: &mut Pixmap,
     src_width: u16,
     src_height: u16,
@@ -285,12 +349,7 @@ pub(super) fn downscale_y(
 ///   → weights: 0.75×pixel\[k\] + 0.25×pixel\[k-1\]
 /// - Position `2k+1`: distance 0.5 from center at `2k+0.5`, distance 1.5 from center at `2k+2.5`
 ///   → weights: 0.75×pixel\[k\] + 0.25×pixel\[k+1\]
-pub(super) fn upscale(
-    src: &mut Pixmap,
-    src_width: u16,
-    src_height: u16,
-    edge_mode: EdgeMode,
-) -> (u16, u16) {
+fn upscale(src: &mut Pixmap, src_width: u16, src_height: u16, edge_mode: EdgeMode) -> (u16, u16) {
     let dst_width = src_width * 2;
     let dst_height = src_height * 2;
     upscale_x(src, src_width, src_height, edge_mode);
@@ -304,7 +363,7 @@ pub(super) fn upscale(
 /// generates two output pixels with different weights based on their distance from
 /// the downsampled pixel's center position.
 /// Operates in-place by processing backwards to avoid overwriting source data.
-pub(super) fn upscale_x(src: &mut Pixmap, src_width: u16, src_height: u16, edge_mode: EdgeMode) {
+fn upscale_x(src: &mut Pixmap, src_width: u16, src_height: u16, edge_mode: EdgeMode) {
     // Process backwards (right to left) to avoid overwriting source data
     for y in 0..src_height {
         // Maintain sliding window of three pixels: prev, current, next
@@ -336,7 +395,7 @@ pub(super) fn upscale_x(src: &mut Pixmap, src_width: u16, src_height: u16, edge_
 /// generates two output pixels with different weights based on their distance from
 /// the downsampled pixel's center position.
 /// Operates in-place by processing backwards to avoid overwriting source data.
-pub(super) fn upscale_y(src: &mut Pixmap, src_width: u16, src_height: u16, edge_mode: EdgeMode) {
+fn upscale_y(src: &mut Pixmap, src_width: u16, src_height: u16, edge_mode: EdgeMode) {
     // Process backwards (bottom to top) to avoid overwriting source data
     for x in 0..src_width {
         // Maintain sliding window of three pixels: prev, current, next
@@ -372,25 +431,13 @@ const TRANSPARENT_BLACK: PremulRgba8 = PremulRgba8 {
 
 /// Sample a pixel with edge mode handling for horizontal sampling.
 #[inline(always)]
-pub(super) fn sample_x(
-    src: &Pixmap,
-    x: i32,
-    y: u16,
-    width: u16,
-    edge_mode: EdgeMode,
-) -> PremulRgba8 {
+fn sample_x(src: &Pixmap, x: i32, y: u16, width: u16, edge_mode: EdgeMode) -> PremulRgba8 {
     sample(x, width, edge_mode, |src_x| src.sample(src_x, y))
 }
 
 /// Sample a pixel with edge mode handling for vertical sampling.
 #[inline(always)]
-pub(super) fn sample_y(
-    src: &Pixmap,
-    x: u16,
-    y: i32,
-    height: u16,
-    edge_mode: EdgeMode,
-) -> PremulRgba8 {
+fn sample_y(src: &Pixmap, x: u16, y: i32, height: u16, edge_mode: EdgeMode) -> PremulRgba8 {
     sample(y, height, edge_mode, |src_y| src.sample(x, src_y))
 }
 
@@ -400,7 +447,7 @@ pub(super) fn sample_y(
 /// The `sample_fn` closure receives the clamped/extended coordinate and returns the pixel.
 /// For `EdgeMode::None`, returns transparent black if the coordinate is out of bounds.
 #[inline(always)]
-pub(super) fn sample<F>(coord: i32, size: u16, edge_mode: EdgeMode, sample_fn: F) -> PremulRgba8
+fn sample<F>(coord: i32, size: u16, edge_mode: EdgeMode, sample_fn: F) -> PremulRgba8
 where
     F: FnOnce(u16) -> PremulRgba8,
 {
@@ -418,7 +465,7 @@ where
 /// depending on the mode. For `EdgeMode::None`, the coordinate is guaranteed to be
 /// in-bounds (already checked by caller, which returns transparent black for out-of-bounds).
 #[inline(always)]
-pub(super) fn extend(coord: i32, size: u16, edge_mode: EdgeMode) -> u16 {
+fn extend(coord: i32, size: u16, edge_mode: EdgeMode) -> u16 {
     match edge_mode {
         EdgeMode::Duplicate => {
             // Clamp to image bounds: pixels outside use nearest edge pixel
@@ -457,7 +504,7 @@ pub(super) fn extend(coord: i32, size: u16, edge_mode: EdgeMode) -> u16 {
 /// This binomial pattern approximates a Gaussian and contributes variance=0.75 to the blur.
 /// Adds 4 before the shift to implement round-to-nearest instead of floor division.
 #[inline(always)]
-pub(super) fn decimate_weighted(
+fn decimate_weighted(
     p0: PremulRgba8,
     p1: PremulRgba8,
     p2: PremulRgba8,
@@ -476,7 +523,7 @@ pub(super) fn decimate_weighted(
 /// Favors the right/next pixel (p1) with 75% weight.
 /// Adds 2 before the shift to implement round-to-nearest instead of floor division.
 #[inline(always)]
-pub(super) fn interpolate_25_75(p0: PremulRgba8, p1: PremulRgba8) -> PremulRgba8 {
+fn interpolate_25_75(p0: PremulRgba8, p1: PremulRgba8) -> PremulRgba8 {
     let r = ((p0.r as u32 + p1.r as u32 * 3 + 2) >> 2) as u8;
     let g = ((p0.g as u32 + p1.g as u32 * 3 + 2) >> 2) as u8;
     let b = ((p0.b as u32 + p1.b as u32 * 3 + 2) >> 2) as u8;
@@ -490,7 +537,7 @@ pub(super) fn interpolate_25_75(p0: PremulRgba8, p1: PremulRgba8) -> PremulRgba8
 /// Used during upsampling for positions closer to the first pixel.
 /// Adds 2 before the shift to implement round-to-nearest instead of floor division.
 #[inline(always)]
-pub(super) fn interpolate_75_25(p0: PremulRgba8, p1: PremulRgba8) -> PremulRgba8 {
+fn interpolate_75_25(p0: PremulRgba8, p1: PremulRgba8) -> PremulRgba8 {
     let r = ((p0.r as u32 * 3 + p1.r as u32 + 2) >> 2) as u8;
     let g = ((p0.g as u32 * 3 + p1.g as u32 + 2) >> 2) as u8;
     let b = ((p0.b as u32 * 3 + p1.b as u32 + 2) >> 2) as u8;

@@ -21,7 +21,9 @@
 use super::FilterEffect;
 use crate::filter::context::ScratchBuffer;
 use vello_common::fearless_simd::{Level, Simd, dispatch};
-use vello_common::filter::gaussian_blur::{DecimationSizer, GaussianBlur, MAX_KERNEL_SIZE};
+use vello_common::filter::gaussian_blur::{
+    DecimationAxes, DecimationSizer, GaussianBlur, MAX_KERNEL_SIZE, decimation_levels,
+};
 use vello_common::filter_effects::EdgeMode;
 use vello_common::peniko::color::PremulRgba8;
 use vello_common::pixmap::Pixmap;
@@ -30,8 +32,7 @@ use alloc::vec::Vec;
 
 impl FilterEffect for GaussianBlur {
     fn execute_lowp(&self, pixmap: &mut Pixmap, filter_scratch: &mut ScratchBuffer) {
-        // No blur if std_deviation is zero or negative
-        if self.std_deviation <= 0.0 {
+        if self.std_deviation_x <= 0.0 && self.std_deviation_y <= 0.0 {
             return;
         }
 
@@ -40,8 +41,10 @@ impl FilterEffect for GaussianBlur {
             pixmap,
             scratch,
             buffers,
-            self.n_decimations,
-            &self.kernel[..usize::from(self.kernel_size)],
+            self.n_decimations_x,
+            self.n_decimations_y,
+            self.kernel_x(),
+            self.kernel_y(),
             self.edge_mode,
         );
     }
@@ -96,9 +99,9 @@ impl BlurBuffers {
 
 /// Apply Gaussian blur using multi-scale decimation and upsampling.
 ///
-/// Uses a precomputed decimation plan and kernel for optimal performance.
-/// Operates in-place using a single pixmap buffer with logical dimension tracking
-/// to minimize memory allocations. For `n_decimations=0`, applies direct convolution.
+/// Uses a precomputed decimation plan and kernel per axis for optimal performance.
+/// Operates in-place using a single pixmap buffer with logical dimension tracking to
+/// minimize memory allocations. With no decimation levels, applies direct convolution.
 ///
 /// The `scratch` buffer is used for separable convolution and must be at least as
 /// large as the source pixmap.
@@ -106,15 +109,26 @@ pub(crate) fn apply_blur(
     pixmap: &mut Pixmap,
     scratch: &mut Pixmap,
     buffers: &mut BlurBuffers,
-    n_decimations: usize,
-    kernel: &[f32],
+    n_decimations_x: usize,
+    n_decimations_y: usize,
+    kernel_x: &[f32],
+    kernel_y: &[f32],
     edge_mode: EdgeMode,
 ) {
     // The passes are plain loops written to be auto-vectorized, so compile them for the
     // best available SIMD level. Everything they call must be inlined for this to apply.
     dispatch!(buffers.level, simd => simd.vectorize(
         #[inline(always)]
-        || blur(pixmap, scratch, buffers, n_decimations, kernel, edge_mode),
+        || blur(
+            pixmap,
+            scratch,
+            buffers,
+            n_decimations_x,
+            n_decimations_y,
+            kernel_x,
+            kernel_y,
+            edge_mode,
+        ),
     ));
 }
 
@@ -123,11 +137,13 @@ fn blur(
     pixmap: &mut Pixmap,
     scratch: &mut Pixmap,
     buffers: &mut BlurBuffers,
-    n_decimations: usize,
-    kernel: &[f32],
+    n_decimations_x: usize,
+    n_decimations_y: usize,
+    kernel_x: &[f32],
+    kernel_y: &[f32],
     edge_mode: EdgeMode,
 ) {
-    let radius = (kernel.len() / 2) as u8;
+    let levels = decimation_levels(n_decimations_x, n_decimations_y);
     let width = pixmap.width();
     let height = pixmap.height();
 
@@ -135,33 +151,27 @@ fn blur(
         return;
     }
 
-    // Small blur: apply direct convolution at full resolution
-    if n_decimations == 0 {
-        convolve(
-            pixmap, scratch, buffers, width, height, kernel, radius, edge_mode,
-        );
-        return;
-    }
-
     // Track logical dimensions through decimation (physical buffer stays the same size)
     let mut sizer = DecimationSizer::new(width, height);
 
-    // Downsample n times (each step reduces resolution by 2×)
-    for _ in 0..n_decimations {
+    // Downsample level by level, finest first
+    for axes in levels.clone() {
         let (w, h) = sizer.current();
-        downscale(pixmap, buffers, w, h, edge_mode);
-        sizer.downscale();
+        downscale_axes(pixmap, buffers, w, h, axes, edge_mode);
+        sizer.downscale_axes(axes);
     }
 
     // Apply the reduced blur at the coarsest resolution
     let (w, h) = sizer.current();
-    convolve(pixmap, scratch, buffers, w, h, kernel, radius, edge_mode);
+    convolve(
+        pixmap, scratch, buffers, w, h, kernel_x, kernel_y, edge_mode,
+    );
 
-    // Upsample back to original resolution (each step doubles resolution by 2×)
-    for _ in 0..n_decimations {
+    // Upsample back to original resolution, undoing the levels coarsest first
+    for axes in levels.rev() {
         let (w, h) = sizer.current();
-        upscale(pixmap, buffers, w, h, edge_mode);
-        sizer.upscale();
+        upscale_axes(pixmap, buffers, w, h, axes, edge_mode);
+        sizer.upscale_axes(axes);
     }
 
     debug_assert_eq!(
@@ -173,9 +183,10 @@ fn blur(
 
 /// Apply separable Gaussian convolution with logical dimensions.
 ///
-/// Performs horizontal blur followed by vertical blur. Works with a logical view
-/// of the pixmap, using only the top-left region defined by width × height.
-/// The `scratch` buffer is provided by the caller to avoid allocations.
+/// Performs horizontal blur followed by vertical blur, each with its own kernel; an
+/// identity kernel (a single weight) skips its pass. Works with a logical view of the
+/// pixmap, using only the top-left region defined by width × height. The `scratch`
+/// buffer is provided by the caller to avoid allocations.
 #[inline(always)]
 pub(crate) fn convolve(
     src: &mut Pixmap,
@@ -183,14 +194,93 @@ pub(crate) fn convolve(
     buffers: &mut BlurBuffers,
     width: u16,
     height: u16,
-    kernel: &[f32],
-    radius: u8,
+    kernel_x: &[f32],
+    kernel_y: &[f32],
     edge_mode: EdgeMode,
 ) {
-    convolve_x(
-        src, scratch, buffers, width, height, kernel, radius, edge_mode,
-    );
-    convolve_y(scratch, src, width, height, kernel, radius, edge_mode);
+    let radius_x = (kernel_x.len() / 2) as u8;
+    let radius_y = (kernel_y.len() / 2) as u8;
+
+    match (kernel_x.len() > 1, kernel_y.len() > 1) {
+        (true, true) => {
+            convolve_x(
+                src, scratch, buffers, width, height, kernel_x, radius_x, edge_mode,
+            );
+            convolve_y(scratch, src, width, height, kernel_y, radius_y, edge_mode);
+        }
+        (true, false) => {
+            convolve_x(
+                src, scratch, buffers, width, height, kernel_x, radius_x, edge_mode,
+            );
+            copy_region(scratch, src, width, height);
+        }
+        (false, true) => {
+            convolve_y(src, scratch, width, height, kernel_y, radius_y, edge_mode);
+            copy_region(scratch, src, width, height);
+        }
+        (false, false) => {}
+    }
+}
+
+/// Copy the top-left `width × height` region from `src` to `dst`.
+#[inline(always)]
+fn copy_region(src: &Pixmap, dst: &mut Pixmap, width: u16, height: u16) {
+    let src_stride = usize::from(src.width());
+    let dst_stride = usize::from(dst.width());
+    let width = usize::from(width);
+
+    for y in 0..usize::from(height) {
+        let src_row = &src.data()[y * src_stride..][..width];
+        dst.data_mut()[y * dst_stride..][..width].copy_from_slice(src_row);
+    }
+}
+
+/// Downsample the given axes by 2x, see [`downscale`].
+#[inline(always)]
+fn downscale_axes(
+    src: &mut Pixmap,
+    buffers: &mut BlurBuffers,
+    src_width: u16,
+    src_height: u16,
+    axes: DecimationAxes,
+    edge_mode: EdgeMode,
+) -> (u16, u16) {
+    match axes {
+        DecimationAxes::Both => downscale(src, buffers, src_width, src_height, edge_mode),
+        DecimationAxes::X => {
+            let dst_width = src_width.div_ceil(2);
+            downscale_x(src, buffers, src_width, src_height, dst_width, edge_mode);
+            (dst_width, src_height)
+        }
+        DecimationAxes::Y => {
+            let dst_height = src_height.div_ceil(2);
+            downscale_y(src, buffers, src_width, src_height, dst_height, edge_mode);
+            (src_width, dst_height)
+        }
+    }
+}
+
+/// Upsample the given axes by 2x, see [`upscale`].
+#[inline(always)]
+fn upscale_axes(
+    src: &mut Pixmap,
+    buffers: &mut BlurBuffers,
+    src_width: u16,
+    src_height: u16,
+    axes: DecimationAxes,
+    edge_mode: EdgeMode,
+) -> (u16, u16) {
+    match axes {
+        DecimationAxes::Both => upscale(src, buffers, src_width, src_height, edge_mode),
+        DecimationAxes::X => {
+            upscale_x(src, buffers, src_width, src_height, edge_mode);
+            (src_width * 2, src_height)
+        }
+        DecimationAxes::Y => {
+            upscale_y(src, buffers, src_width, src_height, edge_mode);
+            (src_width, src_height * 2)
+        }
+    }
 }
 
 /// Apply horizontal blur pass (1D convolution along x-axis).
@@ -845,7 +935,7 @@ fn interpolate_75_25(p0: PremulRgba8, p1: PremulRgba8) -> PremulRgba8 {
 mod tests {
     use super::*;
     use vello_common::filter::gaussian_blur::{
-        MAX_KERNEL_SIZE, compute_gaussian_kernel, plan_decimated_blur,
+        GaussianBlur, MAX_KERNEL_SIZE, compute_gaussian_kernel, plan_decimated_blur,
     };
 
     fn random_pixmap(width: u16, height: u16, seed: &mut u32) -> Pixmap {
@@ -903,15 +993,30 @@ mod tests {
             (130, 18),
         ];
 
+        let std_deviations = [0.3, 0.8, 1.0, 1.7, 2.0, 2.5, 3.0, 4.0, 6.5, 8.0, 20.0];
+        // Isotropic blurs, plus anisotropic ones including blurs along a single axis.
+        let mut std_deviation_pairs: Vec<(f32, f32)> =
+            std_deviations.iter().map(|&s| (s, s)).collect();
+        std_deviation_pairs.extend([
+            (0.0, 1.7),
+            (2.5, 0.0),
+            (0.0, 8.0),
+            (20.0, 0.0),
+            (1.0, 6.5),
+            (8.0, 2.0),
+            (3.0, 20.0),
+        ]);
+
         for (width, height) in sizes {
-            for std_deviation in [0.3, 0.8, 1.0, 1.7, 2.0, 2.5, 3.0, 4.0, 6.5, 8.0, 20.0] {
-                let (n_decimations, kernel, kernel_size) = plan_decimated_blur(std_deviation);
+            for &(std_deviation_x, std_deviation_y) in &std_deviation_pairs {
+                let blur = GaussianBlur::new(std_deviation_x, std_deviation_y, EdgeMode::None);
                 // The original implementation writes out of bounds when upscaling to an odd
                 // physical size, so only compare decimated blurs on even sizes.
-                if n_decimations > 0 && (width % 2 == 1 || height % 2 == 1) {
+                if (blur.n_decimations_x > 0 && width % 2 == 1)
+                    || (blur.n_decimations_y > 0 && height % 2 == 1)
+                {
                     continue;
                 }
-                let kernel = &kernel[..usize::from(kernel_size)];
 
                 for edge_mode in edge_modes {
                     let source = random_pixmap(width, height, &mut seed);
@@ -922,23 +1027,27 @@ mod tests {
                     reference::apply_blur(
                         &mut expected,
                         &mut Pixmap::new(width + 3, height + 1),
-                        n_decimations,
-                        kernel,
+                        blur.n_decimations_x,
+                        blur.n_decimations_y,
+                        blur.kernel_x(),
+                        blur.kernel_y(),
                         edge_mode,
                     );
                     apply_blur(
                         &mut actual,
                         &mut Pixmap::new(width + 3, height + 1),
                         &mut buffers,
-                        n_decimations,
-                        kernel,
+                        blur.n_decimations_x,
+                        blur.n_decimations_y,
+                        blur.kernel_x(),
+                        blur.kernel_y(),
                         edge_mode,
                     );
 
                     assert!(
                         actual.data() == expected.data(),
                         "blur differs from the reference for {width}x{height}, \
-                         σ={std_deviation}, {edge_mode:?}"
+                         σ=({std_deviation_x}, {std_deviation_y}), {edge_mode:?}"
                     );
                 }
             }
@@ -1176,17 +1285,127 @@ mod tests {
         // Should not panic
         let result = std::panic::catch_unwind(move || {
             let mut scratch = Pixmap::new(1, 1);
+            let kernel = &kernel[..usize::from(kernel_size)];
             apply_blur(
                 &mut pixmap,
                 &mut scratch,
                 &mut BlurBuffers::default(),
                 n_decimations,
-                &kernel[..usize::from(kernel_size)],
+                n_decimations,
+                kernel,
+                kernel,
                 EdgeMode::None,
             );
         });
 
         assert!(result.is_ok());
+    }
+
+    /// A blur along one axis only must leave the other axis untouched, with and
+    /// without decimation.
+    #[test]
+    fn test_single_axis_blur_keeps_other_axis_sharp() {
+        for std_deviation in [1.5, 6.0] {
+            let blur = GaussianBlur::new(std_deviation, 0.0, EdgeMode::None);
+            let mut pixmap = Pixmap::new(32, 32);
+            let mut scratch = Pixmap::new(32, 32);
+            // One opaque row in the middle.
+            for x in 0..32 {
+                pixmap.set_pixel(
+                    x,
+                    16,
+                    PremulRgba8 {
+                        r: 255,
+                        g: 0,
+                        b: 0,
+                        a: 255,
+                    },
+                );
+            }
+
+            apply_blur(
+                &mut pixmap,
+                &mut scratch,
+                &mut BlurBuffers::default(),
+                blur.n_decimations_x,
+                blur.n_decimations_y,
+                blur.kernel_x(),
+                blur.kernel_y(),
+                EdgeMode::None,
+            );
+
+            for y in 0..32 {
+                for x in 0..32 {
+                    let alpha = pixmap.sample(x, y).a;
+                    if y == 16 {
+                        assert!(alpha > 0, "σ={std_deviation}: row stayed opaque at x={x}");
+                    } else {
+                        assert_eq!(alpha, 0, "σ={std_deviation}: row {y} was blurred into");
+                    }
+                }
+            }
+        }
+    }
+
+    /// A blur along the y-axis only is the transposed x-only blur.
+    #[test]
+    fn test_axis_blurs_are_transposes() {
+        let mut horizontal = Pixmap::new(24, 24);
+        let mut vertical = Pixmap::new(24, 24);
+        horizontal.set_pixel(
+            12,
+            12,
+            PremulRgba8 {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+        );
+        vertical.set_pixel(
+            12,
+            12,
+            PremulRgba8 {
+                r: 255,
+                g: 0,
+                b: 0,
+                a: 255,
+            },
+        );
+        let mut scratch = Pixmap::new(24, 24);
+
+        let blur_x = GaussianBlur::new(4.0, 0.0, EdgeMode::None);
+        apply_blur(
+            &mut horizontal,
+            &mut scratch,
+            &mut BlurBuffers::default(),
+            blur_x.n_decimations_x,
+            blur_x.n_decimations_y,
+            blur_x.kernel_x(),
+            blur_x.kernel_y(),
+            EdgeMode::None,
+        );
+        let blur_y = GaussianBlur::new(0.0, 4.0, EdgeMode::None);
+        apply_blur(
+            &mut vertical,
+            &mut scratch,
+            &mut BlurBuffers::default(),
+            blur_y.n_decimations_x,
+            blur_y.n_decimations_y,
+            blur_y.kernel_x(),
+            blur_y.kernel_y(),
+            EdgeMode::None,
+        );
+
+        for y in 0..24 {
+            for x in 0..24 {
+                assert_eq!(
+                    horizontal.sample(x, y),
+                    vertical.sample(y, x),
+                    "at ({x}, {y})"
+                );
+            }
+        }
     }
 
     /// Test downscale with odd dimensions.
