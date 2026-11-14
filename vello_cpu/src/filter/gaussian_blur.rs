@@ -20,14 +20,15 @@
 
 use super::FilterEffect;
 use crate::filter::context::ScratchBuffer;
+use vello_common::fearless_simd::{Level, Simd, dispatch};
 use vello_common::filter::gaussian_blur::{
-    DecimationAxes, DecimationSizer, GaussianBlur, decimation_levels,
+    DecimationAxes, DecimationSizer, GaussianBlur, MAX_KERNEL_SIZE, decimation_levels,
 };
 use vello_common::filter_effects::EdgeMode;
 use vello_common::peniko::color::PremulRgba8;
-#[cfg(not(feature = "std"))]
-use vello_common::peniko::kurbo::common::FloatFuncs as _;
 use vello_common::pixmap::Pixmap;
+
+use alloc::vec::Vec;
 
 impl FilterEffect for GaussianBlur {
     fn execute_lowp(&self, pixmap: &mut Pixmap, filter_scratch: &mut ScratchBuffer) {
@@ -35,10 +36,11 @@ impl FilterEffect for GaussianBlur {
             return;
         }
 
-        let scratch = filter_scratch.get_scratch_buffer(pixmap.width(), pixmap.height());
+        let (scratch, buffers) = filter_scratch.get_blur_scratch(pixmap.width(), pixmap.height());
         apply_blur(
             pixmap,
             scratch,
+            buffers,
             self.n_decimations_x,
             self.n_decimations_y,
             self.kernel_x(),
@@ -54,6 +56,47 @@ impl FilterEffect for GaussianBlur {
     }
 }
 
+/// Reusable buffers for [`apply_blur`], so that blurring does not allocate per layer.
+#[derive(Debug)]
+pub(crate) struct BlurBuffers {
+    /// The SIMD level that the blur is compiled for.
+    level: Level,
+    /// Rows of f32 channel values for the convolution passes.
+    floats: Vec<f32>,
+    /// Rows of pixels holding the sliding window of the vertical resampling passes.
+    pixels: Vec<PremulRgba8>,
+}
+
+impl Default for BlurBuffers {
+    fn default() -> Self {
+        Self::new(Level::try_detect().unwrap_or(Level::baseline()))
+    }
+}
+
+impl BlurBuffers {
+    pub(crate) fn new(level: Level) -> Self {
+        Self {
+            level,
+            floats: Vec::new(),
+            pixels: Vec::new(),
+        }
+    }
+
+    /// Return an f32 row with `len` elements.
+    fn float_row(&mut self, len: usize) -> &mut [f32] {
+        self.floats.resize(len, 0.0);
+        &mut self.floats[..len]
+    }
+
+    /// Return `N` pixel rows with `width` pixels each.
+    fn pixel_rows<const N: usize>(&mut self, width: usize) -> [&mut [PremulRgba8]; N] {
+        self.pixels.clear();
+        self.pixels.resize(N * width, TRANSPARENT_BLACK);
+        let mut rows = self.pixels.chunks_exact_mut(width.max(1));
+        core::array::from_fn(|_| rows.next().unwrap())
+    }
+}
+
 /// Apply Gaussian blur using multi-scale decimation and upsampling.
 ///
 /// Uses a precomputed decimation plan and kernel per axis for optimal performance.
@@ -65,6 +108,35 @@ impl FilterEffect for GaussianBlur {
 pub(crate) fn apply_blur(
     pixmap: &mut Pixmap,
     scratch: &mut Pixmap,
+    buffers: &mut BlurBuffers,
+    n_decimations_x: usize,
+    n_decimations_y: usize,
+    kernel_x: &[f32],
+    kernel_y: &[f32],
+    edge_mode: EdgeMode,
+) {
+    // The passes are plain loops written to be auto-vectorized, so compile them for the
+    // best available SIMD level. Everything they call must be inlined for this to apply.
+    dispatch!(buffers.level, simd => simd.vectorize(
+        #[inline(always)]
+        || blur(
+            pixmap,
+            scratch,
+            buffers,
+            n_decimations_x,
+            n_decimations_y,
+            kernel_x,
+            kernel_y,
+            edge_mode,
+        ),
+    ));
+}
+
+#[inline(always)]
+fn blur(
+    pixmap: &mut Pixmap,
+    scratch: &mut Pixmap,
+    buffers: &mut BlurBuffers,
     n_decimations_x: usize,
     n_decimations_y: usize,
     kernel_x: &[f32],
@@ -75,24 +147,30 @@ pub(crate) fn apply_blur(
     let width = pixmap.width();
     let height = pixmap.height();
 
+    if width == 0 || height == 0 {
+        return;
+    }
+
     // Track logical dimensions through decimation (physical buffer stays the same size)
     let mut sizer = DecimationSizer::new(width, height);
 
     // Downsample level by level, finest first
     for axes in levels.clone() {
         let (w, h) = sizer.current();
-        downscale_axes(pixmap, w, h, axes, edge_mode);
+        downscale_axes(pixmap, buffers, w, h, axes, edge_mode);
         sizer.downscale_axes(axes);
     }
 
     // Apply the reduced blur at the coarsest resolution
     let (w, h) = sizer.current();
-    convolve(pixmap, scratch, w, h, kernel_x, kernel_y, edge_mode);
+    convolve(
+        pixmap, scratch, buffers, w, h, kernel_x, kernel_y, edge_mode,
+    );
 
     // Upsample back to original resolution, undoing the levels coarsest first
     for axes in levels.rev() {
         let (w, h) = sizer.current();
-        upscale_axes(pixmap, w, h, axes, edge_mode);
+        upscale_axes(pixmap, buffers, w, h, axes, edge_mode);
         sizer.upscale_axes(axes);
     }
 
@@ -109,9 +187,11 @@ pub(crate) fn apply_blur(
 /// identity kernel (a single weight) skips its pass. Works with a logical view of the
 /// pixmap, using only the top-left region defined by width × height. The `scratch`
 /// buffer is provided by the caller to avoid allocations.
+#[inline(always)]
 pub(crate) fn convolve(
     src: &mut Pixmap,
     scratch: &mut Pixmap,
+    buffers: &mut BlurBuffers,
     width: u16,
     height: u16,
     kernel_x: &[f32],
@@ -123,11 +203,15 @@ pub(crate) fn convolve(
 
     match (kernel_x.len() > 1, kernel_y.len() > 1) {
         (true, true) => {
-            convolve_x(src, scratch, width, height, kernel_x, radius_x, edge_mode);
+            convolve_x(
+                src, scratch, buffers, width, height, kernel_x, radius_x, edge_mode,
+            );
             convolve_y(scratch, src, width, height, kernel_y, radius_y, edge_mode);
         }
         (true, false) => {
-            convolve_x(src, scratch, width, height, kernel_x, radius_x, edge_mode);
+            convolve_x(
+                src, scratch, buffers, width, height, kernel_x, radius_x, edge_mode,
+            );
             copy_region(scratch, src, width, height);
         }
         (false, true) => {
@@ -139,56 +223,61 @@ pub(crate) fn convolve(
 }
 
 /// Copy the top-left `width × height` region from `src` to `dst`.
+#[inline(always)]
 fn copy_region(src: &Pixmap, dst: &mut Pixmap, width: u16, height: u16) {
     let src_stride = usize::from(src.width());
     let dst_stride = usize::from(dst.width());
     let width = usize::from(width);
 
     for y in 0..usize::from(height) {
-        let src_row = &src.data()[y * src_stride..y * src_stride + width];
-        dst.data_mut()[y * dst_stride..y * dst_stride + width].copy_from_slice(src_row);
+        let src_row = &src.data()[y * src_stride..][..width];
+        dst.data_mut()[y * dst_stride..][..width].copy_from_slice(src_row);
     }
 }
 
 /// Downsample the given axes by 2x, see [`downscale`].
+#[inline(always)]
 fn downscale_axes(
     src: &mut Pixmap,
+    buffers: &mut BlurBuffers,
     src_width: u16,
     src_height: u16,
     axes: DecimationAxes,
     edge_mode: EdgeMode,
 ) -> (u16, u16) {
     match axes {
-        DecimationAxes::Both => downscale(src, src_width, src_height, edge_mode),
+        DecimationAxes::Both => downscale(src, buffers, src_width, src_height, edge_mode),
         DecimationAxes::X => {
             let dst_width = src_width.div_ceil(2);
-            downscale_x(src, src_width, src_height, dst_width, edge_mode);
+            downscale_x(src, buffers, src_width, src_height, dst_width, edge_mode);
             (dst_width, src_height)
         }
         DecimationAxes::Y => {
             let dst_height = src_height.div_ceil(2);
-            downscale_y(src, src_width, src_height, dst_height, edge_mode);
+            downscale_y(src, buffers, src_width, src_height, dst_height, edge_mode);
             (src_width, dst_height)
         }
     }
 }
 
 /// Upsample the given axes by 2x, see [`upscale`].
+#[inline(always)]
 fn upscale_axes(
     src: &mut Pixmap,
+    buffers: &mut BlurBuffers,
     src_width: u16,
     src_height: u16,
     axes: DecimationAxes,
     edge_mode: EdgeMode,
 ) -> (u16, u16) {
     match axes {
-        DecimationAxes::Both => upscale(src, src_width, src_height, edge_mode),
+        DecimationAxes::Both => upscale(src, buffers, src_width, src_height, edge_mode),
         DecimationAxes::X => {
-            upscale_x(src, src_width, src_height, edge_mode);
+            upscale_x(src, buffers, src_width, src_height, edge_mode);
             (src_width * 2, src_height)
         }
         DecimationAxes::Y => {
-            upscale_y(src, src_width, src_height, edge_mode);
+            upscale_y(src, buffers, src_width, src_height, edge_mode);
             (src_width, src_height * 2)
         }
     }
@@ -199,47 +288,95 @@ fn upscale_axes(
 /// For each output pixel, computes a weighted sum of horizontally neighboring pixels
 /// using the Gaussian kernel. Handles edge cases according to the specified edge mode.
 /// Writes results to a destination buffer to avoid overwriting source data.
+///
+/// Each row is first widened to f32 into a buffer padded by `radius` pixels on both sides
+/// according to the edge mode, so the inner loops are branch-free and vectorize over the
+/// row's channels. Weights are accumulated in kernel order, so the result is identical to
+/// summing each pixel's taps one by one.
+#[inline(always)]
 pub(crate) fn convolve_x(
     src: &Pixmap,
     dst: &mut Pixmap,
+    buffers: &mut BlurBuffers,
     src_width: u16,
     src_height: u16,
     kernel: &[f32],
     radius: u8,
     edge_mode: EdgeMode,
 ) {
-    for y in 0..src_height {
-        for x in 0..src_width {
-            let mut rgba = [0.0_f32; 4];
+    if src_width == 0 {
+        return;
+    }
 
-            // Sum contributions from all kernel positions: output = Σ(weight[j] × pixel[x+j-radius])
-            for (j, &k) in kernel.iter().enumerate() {
-                #[expect(
-                    clippy::cast_possible_wrap,
-                    reason = "This cast never wraps because `kernel.len()` is never greater than `u8::MAX` due to the restriction on `MAX_KERNEL_SIZE`"
-                )]
-                let j = j as i32;
-                let src_x = x as i32 + j - radius as i32;
-                let p = sample_x(src, src_x, y, src_width, edge_mode);
+    let row_len = usize::from(src_width) * 4;
+    let pad_len = usize::from(radius) * 4;
+    let src_stride = usize::from(src.width()) * 4;
+    let dst_stride = usize::from(dst.width()) * 4;
+    let padded = buffers.float_row(row_len + 2 * pad_len);
+    let src_data = src.data_as_u8_slice();
+    let dst_data = dst.data_as_u8_slice_mut();
 
-                rgba[0] += p.r as f32 * k;
-                rgba[1] += p.g as f32 * k;
-                rgba[2] += p.b as f32 * k;
-                rgba[3] += p.a as f32 * k;
-            }
+    for y in 0..usize::from(src_height) {
+        let src_row = &src_data[y * src_stride..][..row_len];
 
-            // Convert back to u8 with rounding
-            dst.set_pixel(
-                x,
-                y,
-                PremulRgba8 {
-                    r: rgba[0].round() as u8,
-                    g: rgba[1].round() as u8,
-                    b: rgba[2].round() as u8,
-                    a: rgba[3].round() as u8,
-                },
-            );
+        let (left, rest) = padded.split_at_mut(pad_len);
+        let (middle, right) = rest.split_at_mut(row_len);
+        for (d, &s) in middle.iter_mut().zip(src_row) {
+            *d = f32::from(s);
         }
+        for (i, pixel) in left.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let x = i as i32 - i32::from(radius);
+            pad_pixel(pixel, src_row, x, src_width, edge_mode);
+        }
+        for (i, pixel) in right.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            let x = i32::from(src_width) + i as i32;
+            pad_pixel(pixel, src_row, x, src_width, edge_mode);
+        }
+
+        // Sum contributions from all kernel positions: output = Σ(weight[j] × pixel[x+j-radius])
+        let dst_row = &mut dst_data[y * dst_stride..][..row_len];
+        let (blocks, remainder) = dst_row.as_chunks_mut::<BLOCK>();
+        let mut start = 0;
+        for out in blocks {
+            convolve_x_block::<BLOCK>(padded, kernel, start, out);
+            start += BLOCK;
+        }
+        for out in remainder.as_chunks_mut::<4>().0 {
+            convolve_x_block::<4>(padded, kernel, start, out);
+            start += 4;
+        }
+    }
+}
+
+/// Number of channel values accumulated at once by the convolution passes, small enough for the
+/// accumulators to stay in registers.
+const BLOCK: usize = 16;
+
+/// Convolve the `N` channel values starting at `start` of a padded row.
+#[inline(always)]
+fn convolve_x_block<const N: usize>(padded: &[f32], kernel: &[f32], start: usize, out: &mut [u8]) {
+    let mut acc = [0.0_f32; N];
+    for (j, &k) in kernel.iter().enumerate() {
+        let taps: &[f32; N] = padded[start + j * 4..][..N].try_into().unwrap();
+        for (a, &p) in acc.iter_mut().zip(taps) {
+            *a += p * k;
+        }
+    }
+    for (d, &a) in out.iter_mut().zip(&acc) {
+        *d = round_to_u8(a);
+    }
+}
+
+/// Write the f32 channels of the source pixel at `x` (extended by the edge mode) into `pixel`.
+#[inline(always)]
+fn pad_pixel(pixel: &mut [f32], src_row: &[u8], x: i32, width: u16, edge_mode: EdgeMode) {
+    match source_index(x, width, edge_mode) {
+        Some(src_x) => {
+            for (d, &s) in pixel.iter_mut().zip(&src_row[src_x * 4..][..4]) {
+                *d = f32::from(s);
+            }
+        }
+        None => pixel.fill(0.0),
     }
 }
 
@@ -248,6 +385,11 @@ pub(crate) fn convolve_x(
 /// For each output pixel, computes a weighted sum of vertically neighboring pixels
 /// using the Gaussian kernel. Handles edge cases according to the specified edge mode.
 /// Writes results to a destination buffer to avoid overwriting source data.
+///
+/// Works a row at a time: each output row accumulates whole weighted source rows, which keeps
+/// memory accesses sequential and lets the inner loop vectorize. Weights are accumulated in
+/// kernel order, so the result is identical to summing each pixel's taps one by one.
+#[inline(always)]
 pub(crate) fn convolve_y(
     src: &Pixmap,
     dst: &mut Pixmap,
@@ -257,57 +399,101 @@ pub(crate) fn convolve_y(
     radius: u8,
     edge_mode: EdgeMode,
 ) {
-    for y in 0..src_height {
-        for x in 0..src_width {
-            let mut rgba = [0.0_f32; 4];
+    if src_height == 0 {
+        return;
+    }
 
-            // Sum contributions from all kernel positions: output = Σ(weight[j] × pixel[y+j-radius])
-            for (j, &k) in kernel.iter().enumerate() {
-                #[expect(
-                    clippy::cast_possible_wrap,
-                    reason = "This cast never wraps because `kernel.len()` is never greater than `u8::MAX` due to the restriction on `MAX_KERNEL_SIZE`"
-                )]
-                let j = j as i32;
-                let src_y = y as i32 + j - radius as i32;
-                let p = sample_y(src, x, src_y, src_height, edge_mode);
+    let row_len = usize::from(src_width) * 4;
+    let src_stride = usize::from(src.width()) * 4;
+    let dst_stride = usize::from(dst.width()) * 4;
+    let src_data = src.data_as_u8_slice();
+    let dst_data = dst.data_as_u8_slice_mut();
+    let mut taps = [(0_usize, 0.0_f32); MAX_KERNEL_SIZE];
 
-                rgba[0] += p.r as f32 * k;
-                rgba[1] += p.g as f32 * k;
-                rgba[2] += p.b as f32 * k;
-                rgba[3] += p.a as f32 * k;
+    for y in 0..usize::from(src_height) {
+        // Collect the source rows and weights of all kernel positions:
+        // output = Σ(weight[j] × pixel[y+j-radius])
+        let mut n_taps = 0;
+        for (j, &k) in kernel.iter().enumerate() {
+            let src_y = y as i32 + j as i32 - i32::from(radius);
+            // Out-of-bounds rows are transparent black, which add nothing to the sum.
+            if let Some(src_y) = source_index(src_y, src_height, edge_mode) {
+                taps[n_taps] = (src_y * src_stride, k);
+                n_taps += 1;
             }
+        }
+        let taps = &taps[..n_taps];
 
-            // Convert back to u8 with rounding
-            dst.set_pixel(
-                x,
-                y,
-                PremulRgba8 {
-                    r: rgba[0].round() as u8,
-                    g: rgba[1].round() as u8,
-                    b: rgba[2].round() as u8,
-                    a: rgba[3].round() as u8,
-                },
-            );
+        let dst_row = &mut dst_data[y * dst_stride..][..row_len];
+        let (blocks, remainder) = dst_row.as_chunks_mut::<BLOCK>();
+        let mut start = 0;
+        for out in blocks {
+            convolve_y_block::<BLOCK>(src_data, taps, start, out);
+            start += BLOCK;
+        }
+        for out in remainder.as_chunks_mut::<4>().0 {
+            convolve_y_block::<4>(src_data, taps, start, out);
+            start += 4;
         }
     }
+}
+
+/// Convolve the `N` channel values starting at `start` of each tap's source row.
+#[inline(always)]
+fn convolve_y_block<const N: usize>(
+    src_data: &[u8],
+    taps: &[(usize, f32)],
+    start: usize,
+    out: &mut [u8],
+) {
+    let mut acc = [0.0_f32; N];
+    for &(offset, k) in taps {
+        let row: &[u8; N] = src_data[offset + start..][..N].try_into().unwrap();
+        for (a, &p) in acc.iter_mut().zip(row) {
+            *a += f32::from(p) * k;
+        }
+    }
+    for (d, &a) in out.iter_mut().zip(&acc) {
+        *d = round_to_u8(a);
+    }
+}
+
+/// Round a non-negative channel sum to the nearest `u8`, with ties away from zero.
+///
+/// This gives the same result as `v.round() as u8` for the sums produced by the convolution
+/// passes, but avoids a call to `roundf` (there is no rounding instruction in baseline x86-64),
+/// so the conversion loops vectorize.
+#[inline(always)]
+fn round_to_u8(v: f32) -> u8 {
+    // Adding and subtracting 2^23 rounds any value in [0, 2^23) to the nearest integer, with
+    // ties to even. Ties that went down are then bumped up. `v - nearest` is exact.
+    // Since the offset sum is in [2^23, 2^23 + 255], its low mantissa byte is the integer.
+    const ROUNDING_OFFSET: f32 = 8_388_608.0;
+    let v = v.min(255.0);
+    let offset = v + ROUNDING_OFFSET;
+    let nearest = offset.to_bits() as u8;
+    let is_tie_rounded_down = v - (offset - ROUNDING_OFFSET) == 0.5;
+    nearest + u8::from(is_tie_rounded_down)
 }
 
 /// Downsample image by 2x using separable \[1,3,3,1\]/8 binomial filter.
 ///
 /// Performs horizontal and vertical decimation in sequence. Returns the new
 /// logical dimensions (ceil(width/2), ceil(height/2)).
+#[inline(always)]
 pub(crate) fn downscale(
     src: &mut Pixmap,
+    buffers: &mut BlurBuffers,
     src_width: u16,
     src_height: u16,
     edge_mode: EdgeMode,
 ) -> (u16, u16) {
     let dst_width = src_width.div_ceil(2);
     let dst_height = src_height.div_ceil(2);
-    downscale_x(src, src_width, src_height, dst_width, edge_mode);
+    downscale_x(src, buffers, src_width, src_height, dst_width, edge_mode);
     // We can pass `dst_width` instead of `src_width` here, since we already decimated
     // horizontally.
-    downscale_y(src, dst_width, src_height, dst_height, edge_mode);
+    downscale_y(src, buffers, dst_width, src_height, dst_height, edge_mode);
     (dst_width, dst_height)
 }
 
@@ -315,67 +501,122 @@ pub(crate) fn downscale(
 ///
 /// Reduces width by 2x while applying a binomial blur kernel. The \[1,3,3,1\] weights
 /// approximate a Gaussian and contribute variance=0.75 before the 2x downsampling.
+#[inline(always)]
 fn downscale_x(
     src: &mut Pixmap,
+    buffers: &mut BlurBuffers,
     src_width: u16,
     src_height: u16,
     dst_width: u16,
     edge_mode: EdgeMode,
 ) {
-    for y in 0..src_height {
-        // Sliding window: maintains 2 previous pixels (x0, x1) to form 4-tap filter
-        // with current pixels (x2, x3). Start with sample at -1 for implicit left padding.
-        let mut p0 = sample_x(src, -1, y, src_width, edge_mode);
-        let mut p1 = sample_x(src, 0, y, src_width, edge_mode);
+    let stride = usize::from(src.width());
+    let width = usize::from(src_width).min(stride);
+    if width == 0 {
+        return;
+    }
+    let dst_width = usize::from(dst_width);
+    // Outputs in `1..interior_end` only read source pixels inside the row.
+    let interior_end = ((width - 1) / 2).clamp(1, dst_width);
+    let [copy] = buffers.pixel_rows::<1>(width);
 
-        for x in 0..dst_width {
-            // Sample 4 horizontally adjacent pixels for [1,3,3,1] kernel
-            // Pattern: [x*2-1, x*2, x*2+1, x*2+2]
-            let src_x = (x * 2) as i32;
-            let p2 = sample_x(src, src_x + 1, y, src_width, edge_mode);
-            let p3 = sample_x(src, src_x + 2, y, src_width, edge_mode);
+    for row in src
+        .data_mut()
+        .chunks_exact_mut(stride)
+        .take(usize::from(src_height))
+    {
+        // Interior outputs read from a copy of the row so they can be computed independently
+        // of the outputs written before them. Since output `x` only reads source pixels from
+        // `2x-1` onwards, which have not been overwritten yet, this gives the same result as
+        // computing them in place.
+        copy.copy_from_slice(&row[..width]);
+        row[0] = downscale_pixel(row, 0, src_width, edge_mode);
 
-            // Apply [1,3,3,1]/8 weights → output = (p0 + 3×p1 + 3×p2 + p3) / 8
-            src.set_pixel(x, y, decimate_weighted(p0, p1, p2, p3));
+        let src_bytes: &[u8] = bytemuck::cast_slice(copy);
+        let dst_bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut row[1..interior_end]);
+        for (i, dst) in dst_bytes.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+            // Apply [1,3,3,1]/8 weights to pixels [x*2-1, x*2, x*2+1, x*2+2] with x = i + 1
+            let p = &src_bytes[(i * 2 + 1) * 4..][..16];
+            for (c, d) in dst.iter_mut().enumerate() {
+                let sum = u16::from(p[c])
+                    + u16::from(p[4 + c]) * 3
+                    + u16::from(p[8 + c]) * 3
+                    + u16::from(p[12 + c]);
+                *d = ((sum + 4) >> 3) as u8;
+            }
+        }
 
-            // Advance window: previous p2,p3 become next p0,p1
-            p0 = p2;
-            p1 = p3;
+        // The remaining outputs may read extended pixels, which may already have been
+        // overwritten, so compute them in place in order.
+        for x in interior_end..dst_width {
+            row[x] = downscale_pixel(row, x, src_width, edge_mode);
         }
     }
+}
+
+/// Compute decimated pixel `x` of a row from the pixels `[x*2-1, x*2, x*2+1, x*2+2]`.
+#[inline(always)]
+fn downscale_pixel(row: &[PremulRgba8], x: usize, width: u16, edge_mode: EdgeMode) -> PremulRgba8 {
+    let src_x = (x * 2) as i32;
+    decimate_weighted(
+        sample_row(row, src_x - 1, width, edge_mode),
+        sample_row(row, src_x, width, edge_mode),
+        sample_row(row, src_x + 1, width, edge_mode),
+        sample_row(row, src_x + 2, width, edge_mode),
+    )
 }
 
 /// Vertical decimation pass using \[1,3,3,1\]/8 filter.
 ///
 /// Reduces logical height by 2x while applying a binomial blur kernel.
 /// Operates in-place by writing to the beginning of the same buffer.
+///
+/// Works a row at a time, keeping copies of the rows in the sliding window, so that each column
+/// sees exactly the same reads and writes as when processing it on its own.
+#[inline(always)]
 fn downscale_y(
     src: &mut Pixmap,
+    buffers: &mut BlurBuffers,
     src_width: u16,
     src_height: u16,
     dst_height: u16,
     edge_mode: EdgeMode,
 ) {
-    for x in 0..src_width {
-        // Sliding window: maintains 2 previous pixels (y0, y1) to form 4-tap filter
-        // with current pixels (y2, y3). Start with sample at -1 for implicit top padding.
-        let mut p0 = sample_y(src, x, -1, src_height, edge_mode);
-        let mut p1 = sample_y(src, x, 0, src_height, edge_mode);
+    let stride = usize::from(src.width());
+    let width = usize::from(src_width).min(stride);
+    let data = src.data_mut();
+    let [mut p0, mut p1, mut p2, mut p3] = buffers.pixel_rows::<4>(width);
 
-        for y in 0..dst_height {
-            // Sample 4 vertically adjacent pixels for [1,3,3,1] kernel
-            // Pattern: [y*2-1, y*2, y*2+1, y*2+2]
-            let src_y = (y * 2) as i32;
-            let p2 = sample_y(src, x, src_y + 1, src_height, edge_mode);
-            let p3 = sample_y(src, x, src_y + 2, src_height, edge_mode);
+    // Sliding window: maintains 2 previous rows (y0, y1) to form 4-tap filter
+    // with current rows (y2, y3). Start with row -1 for implicit top padding.
+    load_row(p0, data, stride, -1, src_height, edge_mode);
+    load_row(p1, data, stride, 0, src_height, edge_mode);
 
-            // Apply [1,3,3,1]/8 weights → output = (p0 + 3×p1 + 3×p2 + p3) / 8
-            src.set_pixel(x, y, decimate_weighted(p0, p1, p2, p3));
+    for y in 0..usize::from(dst_height) {
+        // Rows [y*2-1, y*2, y*2+1, y*2+2] for the [1,3,3,1] kernel
+        let src_y = (y * 2) as i32;
+        load_row(p2, data, stride, src_y + 1, src_height, edge_mode);
+        load_row(p3, data, stride, src_y + 2, src_height, edge_mode);
 
-            // Advance window: previous p2,p3 become next p0,p1
-            p0 = p2;
-            p1 = p3;
+        // Apply [1,3,3,1]/8 weights → output = (p0 + 3×p1 + 3×p2 + p3) / 8
+        let dst: &mut [u8] = bytemuck::cast_slice_mut(&mut data[y * stride..][..width]);
+        let rows: [&[u8]; 4] = [
+            bytemuck::cast_slice(p0),
+            bytemuck::cast_slice(p1),
+            bytemuck::cast_slice(p2),
+            bytemuck::cast_slice(p3),
+        ];
+        for (i, d) in dst.iter_mut().enumerate() {
+            let sum = u16::from(rows[0][i])
+                + u16::from(rows[1][i]) * 3
+                + u16::from(rows[2][i]) * 3
+                + u16::from(rows[3][i]);
+            *d = ((sum + 4) >> 3) as u8;
         }
+
+        // Advance window: previous p2,p3 become next p0,p1
+        core::mem::swap(&mut p0, &mut p2);
+        core::mem::swap(&mut p1, &mut p3);
     }
 }
 
@@ -397,16 +638,18 @@ fn downscale_y(
 ///   → weights: 0.75×pixel\[k\] + 0.25×pixel\[k-1\]
 /// - Position `2k+1`: distance 0.5 from center at `2k+0.5`, distance 1.5 from center at `2k+2.5`
 ///   → weights: 0.75×pixel\[k\] + 0.25×pixel\[k+1\]
+#[inline(always)]
 pub(crate) fn upscale(
     src: &mut Pixmap,
+    buffers: &mut BlurBuffers,
     src_width: u16,
     src_height: u16,
     edge_mode: EdgeMode,
 ) -> (u16, u16) {
     let dst_width = src_width * 2;
     let dst_height = src_height * 2;
-    upscale_x(src, src_width, src_height, edge_mode);
-    upscale_y(src, dst_width, src_height, edge_mode);
+    upscale_x(src, buffers, src_width, src_height, edge_mode);
+    upscale_y(src, buffers, dst_width, src_height, edge_mode);
     (dst_width, dst_height)
 }
 
@@ -416,29 +659,68 @@ pub(crate) fn upscale(
 /// generates two output pixels with different weights based on their distance from
 /// the downsampled pixel's center position.
 /// Operates in-place by processing backwards to avoid overwriting source data.
-fn upscale_x(src: &mut Pixmap, src_width: u16, src_height: u16, edge_mode: EdgeMode) {
-    // Process backwards (right to left) to avoid overwriting source data
-    for y in 0..src_height {
-        // Maintain sliding window of three pixels: prev, current, next
-        // This allows us to compute both output pixels that depend on current pixel x
-        let mut p0 = sample_x(src, src_width as i32, y, src_width, edge_mode);
-        let mut p1 = sample_x(src, src_width as i32 - 1, y, src_width, edge_mode);
+#[inline(always)]
+fn upscale_x(
+    src: &mut Pixmap,
+    buffers: &mut BlurBuffers,
+    src_width: u16,
+    src_height: u16,
+    edge_mode: EdgeMode,
+) {
+    let stride = usize::from(src.width());
+    let width = usize::from(src_width);
+    if stride == 0 || width == 0 {
+        return;
+    }
+    let [copy] = buffers.pixel_rows::<1>(width);
 
-        for x in (0..src_width).rev() {
-            let src_x = x as i32;
-            let p2 = sample_x(src, src_x - 1, y, src_width, edge_mode);
-
-            // Generate two output pixels per input with phase-aligned interpolation:
-            // output[2x]   = 0.25×p2 + 0.75×p1  (position 2x   is 0.5 from center at 2x+0.5)
-            // output[2x+1] = 0.75×p1 + 0.25×p0  (position 2x+1 is 0.5 from center at 2x+0.5)
-            let dst_x = x * 2;
-            src.set_pixel(dst_x, y, interpolate_25_75(p2, p1));
-            src.set_pixel(dst_x + 1, y, interpolate_75_25(p1, p0));
-
-            // Advance sliding window for next iteration
-            p0 = p1;
-            p1 = p2;
+    for row in src
+        .data_mut()
+        .chunks_exact_mut(stride)
+        .take(usize::from(src_height))
+    {
+        // Process backwards (right to left) to avoid overwriting source data. Input pixel `x`
+        // only depends on `[x-1, x, x+1]`, none of which are overwritten before it is processed
+        // unless they are extended pixels, so interior pixels can be computed from a copy.
+        copy.copy_from_slice(&row[..width]);
+        if width > 1 {
+            upscale_pixel(row, width - 1, src_width, edge_mode);
         }
+
+        if width > 2 {
+            let src_bytes: &[u8] = bytemuck::cast_slice(copy);
+            let dst_bytes: &mut [u8] = bytemuck::cast_slice_mut(&mut row[2..(width - 1) * 2]);
+            for (i, dst) in dst_bytes.as_chunks_mut::<8>().0.iter_mut().enumerate() {
+                // Pixels [x-1, x, x+1] with x = i + 1
+                let p = &src_bytes[i * 4..][..12];
+                let (even, odd) = dst.split_at_mut(4);
+                for c in 0..4 {
+                    // output[2x]   = 0.25×p[x-1] + 0.75×p[x]
+                    // output[2x+1] = 0.75×p[x]   + 0.25×p[x+1]
+                    even[c] = ((u16::from(p[c]) + u16::from(p[4 + c]) * 3 + 2) >> 2) as u8;
+                    odd[c] = ((u16::from(p[4 + c]) * 3 + u16::from(p[8 + c]) + 2) >> 2) as u8;
+                }
+            }
+        }
+
+        upscale_pixel(row, 0, src_width, edge_mode);
+    }
+}
+
+/// Write the two upsampled pixels `[x*2, x*2+1]` of a row in place, from the input pixels
+/// `[x-1, x, x+1]`.
+#[inline(always)]
+fn upscale_pixel(row: &mut [PremulRgba8], x: usize, width: u16, edge_mode: EdgeMode) {
+    let prev = sample_row(row, x as i32 - 1, width, edge_mode);
+    let current = sample_row(row, x as i32, width, edge_mode);
+    let next = sample_row(row, x as i32 + 1, width, edge_mode);
+    // Phase-aligned interpolation:
+    // output[2x]   = 0.25×prev + 0.75×current  (position 2x   is 0.5 from center at 2x+0.5)
+    // output[2x+1] = 0.75×current + 0.25×next  (position 2x+1 is 0.5 from center at 2x+0.5)
+    row[x * 2] = interpolate_25_75(prev, current);
+    // On odd physical widths the last output pixel falls outside the pixmap.
+    if let Some(pixel) = row.get_mut(x * 2 + 1) {
+        *pixel = interpolate_75_25(current, next);
     }
 }
 
@@ -448,29 +730,72 @@ fn upscale_x(src: &mut Pixmap, src_width: u16, src_height: u16, edge_mode: EdgeM
 /// generates two output pixels with different weights based on their distance from
 /// the downsampled pixel's center position.
 /// Operates in-place by processing backwards to avoid overwriting source data.
-fn upscale_y(src: &mut Pixmap, src_width: u16, src_height: u16, edge_mode: EdgeMode) {
+///
+/// Works a row at a time, keeping copies of the rows in the sliding window, so that each column
+/// sees exactly the same reads and writes as when processing it on its own.
+#[inline(always)]
+fn upscale_y(
+    src: &mut Pixmap,
+    buffers: &mut BlurBuffers,
+    src_width: u16,
+    src_height: u16,
+    edge_mode: EdgeMode,
+) {
+    let stride = usize::from(src.width());
+    let physical_height = usize::from(src.height());
+    let width = usize::from(src_width).min(stride);
+    let data = src.data_mut();
+    let [mut p0, mut p1, mut p2] = buffers.pixel_rows::<3>(width);
+
+    // Maintain sliding window of three rows: prev, current, next
+    // This allows us to compute both output rows that depend on current row y
+    let height = i32::from(src_height);
+    load_row(p0, data, stride, height, src_height, edge_mode);
+    load_row(p1, data, stride, height - 1, src_height, edge_mode);
+
     // Process backwards (bottom to top) to avoid overwriting source data
-    for x in 0..src_width {
-        // Maintain sliding window of three pixels: prev, current, next
-        // This allows us to compute both output pixels that depend on current pixel y
-        let mut p0 = sample_y(src, x, src_height as i32, src_height, edge_mode);
-        let mut p1 = sample_y(src, x, src_height as i32 - 1, src_height, edge_mode);
+    for y in (0..usize::from(src_height)).rev() {
+        load_row(p2, data, stride, y as i32 - 1, src_height, edge_mode);
 
-        for y in (0..src_height).rev() {
-            let src_y = y as i32;
-            let p2 = sample_y(src, x, src_y - 1, src_height, edge_mode);
-
-            // Generate two output rows per input with phase-aligned interpolation:
-            // output[2y]   = 0.25×p2 + 0.75×p1  (position 2y   is 0.5 from center at 2y+0.5)
-            // output[2y+1] = 0.75×p1 + 0.25×p0  (position 2y+1 is 0.5 from center at 2y+0.5)
-            let dst_y = y * 2;
-            src.set_pixel(x, dst_y, interpolate_25_75(p2, p1));
-            src.set_pixel(x, dst_y + 1, interpolate_75_25(p1, p0));
-
-            // Advance sliding window for next iteration
-            p0 = p1;
-            p1 = p2;
+        // Generate two output rows per input with phase-aligned interpolation:
+        // output[2y]   = 0.25×p2 + 0.75×p1  (position 2y   is 0.5 from center at 2y+0.5)
+        // output[2y+1] = 0.75×p1 + 0.25×p0  (position 2y+1 is 0.5 from center at 2y+0.5)
+        let dst_y = y * 2;
+        let prev: &[u8] = bytemuck::cast_slice(p2);
+        let current: &[u8] = bytemuck::cast_slice(p1);
+        let next: &[u8] = bytemuck::cast_slice(p0);
+        let dst: &mut [u8] = bytemuck::cast_slice_mut(&mut data[dst_y * stride..][..width]);
+        for ((d, &a), &b) in dst.iter_mut().zip(prev).zip(current) {
+            *d = ((u16::from(a) + u16::from(b) * 3 + 2) >> 2) as u8;
         }
+        // On odd physical heights the last output row falls outside the pixmap.
+        if dst_y + 1 < physical_height {
+            let dst: &mut [u8] =
+                bytemuck::cast_slice_mut(&mut data[(dst_y + 1) * stride..][..width]);
+            for ((d, &a), &b) in dst.iter_mut().zip(current).zip(next) {
+                *d = ((u16::from(a) * 3 + u16::from(b) + 2) >> 2) as u8;
+            }
+        }
+
+        // Advance sliding window for next iteration
+        core::mem::swap(&mut p0, &mut p1);
+        core::mem::swap(&mut p1, &mut p2);
+    }
+}
+
+/// Copy the source row at `y` (extended by the edge mode) into `dst`.
+#[inline(always)]
+fn load_row(
+    dst: &mut [PremulRgba8],
+    data: &[PremulRgba8],
+    stride: usize,
+    y: i32,
+    height: u16,
+    edge_mode: EdgeMode,
+) {
+    match source_index(y, height, edge_mode) {
+        Some(src_y) => dst.copy_from_slice(&data[src_y * stride..][..dst.len()]),
+        None => dst.fill(TRANSPARENT_BLACK),
     }
 }
 
@@ -482,16 +807,24 @@ const TRANSPARENT_BLACK: PremulRgba8 = PremulRgba8 {
     a: 0,
 };
 
-/// Sample a pixel with edge mode handling for horizontal sampling.
+/// Sample a pixel from a row with edge mode handling, with a fast path for in-bounds pixels.
 #[inline(always)]
-fn sample_x(src: &Pixmap, x: i32, y: u16, width: u16, edge_mode: EdgeMode) -> PremulRgba8 {
-    sample(x, width, edge_mode, |src_x| src.sample(src_x, y))
+fn sample_row(row: &[PremulRgba8], x: i32, width: u16, edge_mode: EdgeMode) -> PremulRgba8 {
+    if x >= 0 && x < i32::from(width) {
+        row[x as usize]
+    } else {
+        sample(x, width, edge_mode, |src_x| row[usize::from(src_x)])
+    }
 }
 
-/// Sample a pixel with edge mode handling for vertical sampling.
+/// Map a coordinate to the index of the pixel it samples, or `None` if it samples transparent
+/// black (out of bounds with [`EdgeMode::None`]).
 #[inline(always)]
-fn sample_y(src: &Pixmap, x: u16, y: i32, height: u16, edge_mode: EdgeMode) -> PremulRgba8 {
-    sample(y, height, edge_mode, |src_y| src.sample(x, src_y))
+fn source_index(coord: i32, size: u16, edge_mode: EdgeMode) -> Option<usize> {
+    if edge_mode == EdgeMode::None && (coord < 0 || coord >= i32::from(size)) {
+        return None;
+    }
+    Some(usize::from(extend(coord, size, edge_mode)))
 }
 
 /// Sample a pixel with edge mode handling (generic implementation).
@@ -604,6 +937,144 @@ mod tests {
     use vello_common::filter::gaussian_blur::{
         GaussianBlur, MAX_KERNEL_SIZE, compute_gaussian_kernel, plan_decimated_blur,
     };
+
+    fn random_pixmap(width: u16, height: u16, seed: &mut u32) -> Pixmap {
+        let mut next = || {
+            // xorshift32
+            *seed ^= *seed << 13;
+            *seed ^= *seed >> 17;
+            *seed ^= *seed << 5;
+            *seed
+        };
+        let mut pixmap = Pixmap::new(width, height);
+        for pixel in pixmap.data_mut() {
+            let bits = next();
+            // Mix fully transparent, fully opaque and partially transparent pixels.
+            let a = match bits % 4 {
+                0 => 0,
+                1 => 255,
+                _ => (bits >> 8) as u8,
+            };
+            let channel = |shift: u32| ((((bits >> shift) & 0xff) * u32::from(a)) / 255) as u8;
+            *pixel = PremulRgba8 {
+                r: channel(16),
+                g: channel(24),
+                b: channel(4),
+                a,
+            };
+        }
+        pixmap
+    }
+
+    /// The optimized blur must be bit-identical to the original scalar implementation.
+    #[test]
+    fn test_matches_reference_implementation() {
+        use crate::filter::gaussian_blur_reference as reference;
+
+        let mut seed = 0x1234_5678;
+        // Reuse one set of buffers across sizes, as the filter context does across layers.
+        let mut buffers = BlurBuffers::default();
+        let edge_modes = [
+            EdgeMode::None,
+            EdgeMode::Duplicate,
+            EdgeMode::Wrap,
+            EdgeMode::Mirror,
+        ];
+        let sizes: [(u16, u16); 10] = [
+            (1, 1),
+            (2, 2),
+            (1, 9),
+            (7, 3),
+            (13, 11),
+            (16, 16),
+            (60, 60),
+            (64, 52),
+            (34, 70),
+            (130, 18),
+        ];
+
+        let std_deviations = [0.3, 0.8, 1.0, 1.7, 2.0, 2.5, 3.0, 4.0, 6.5, 8.0, 20.0];
+        // Isotropic blurs, plus anisotropic ones including blurs along a single axis.
+        let mut std_deviation_pairs: Vec<(f32, f32)> =
+            std_deviations.iter().map(|&s| (s, s)).collect();
+        std_deviation_pairs.extend([
+            (0.0, 1.7),
+            (2.5, 0.0),
+            (0.0, 8.0),
+            (20.0, 0.0),
+            (1.0, 6.5),
+            (8.0, 2.0),
+            (3.0, 20.0),
+        ]);
+
+        for (width, height) in sizes {
+            for &(std_deviation_x, std_deviation_y) in &std_deviation_pairs {
+                let blur = GaussianBlur::new(std_deviation_x, std_deviation_y, EdgeMode::None);
+                // The original implementation writes out of bounds when upscaling to an odd
+                // physical size, so only compare decimated blurs on even sizes.
+                if (blur.n_decimations_x > 0 && width % 2 == 1)
+                    || (blur.n_decimations_y > 0 && height % 2 == 1)
+                {
+                    continue;
+                }
+
+                for edge_mode in edge_modes {
+                    let source = random_pixmap(width, height, &mut seed);
+                    let mut expected = source.clone();
+                    let mut actual = source;
+                    // Use a larger scratch buffer, as the filter context may have one from a
+                    // previous, larger layer.
+                    reference::apply_blur(
+                        &mut expected,
+                        &mut Pixmap::new(width + 3, height + 1),
+                        blur.n_decimations_x,
+                        blur.n_decimations_y,
+                        blur.kernel_x(),
+                        blur.kernel_y(),
+                        edge_mode,
+                    );
+                    apply_blur(
+                        &mut actual,
+                        &mut Pixmap::new(width + 3, height + 1),
+                        &mut buffers,
+                        blur.n_decimations_x,
+                        blur.n_decimations_y,
+                        blur.kernel_x(),
+                        blur.kernel_y(),
+                        edge_mode,
+                    );
+
+                    assert!(
+                        actual.data() == expected.data(),
+                        "blur differs from the reference for {width}x{height}, \
+                         σ=({std_deviation_x}, {std_deviation_y}), {edge_mode:?}"
+                    );
+                }
+            }
+        }
+    }
+
+    /// Rounding must match `f32::round` (ties away from zero) for every reachable value.
+    #[test]
+    fn test_round_to_u8_matches_round() {
+        let check = |v: f32| assert_eq!(round_to_u8(v), v.round() as u8, "rounding {v}");
+        // Values around every integer and every tie, where the rounding direction changes.
+        for n in 0..=256_u16 {
+            for center in [f32::from(n), f32::from(n) + 0.5] {
+                let (mut below, mut above) = (center, center);
+                for _ in 0..64 {
+                    check(below);
+                    check(above);
+                    below = below.next_down().max(0.0);
+                    above = above.next_up();
+                }
+            }
+        }
+        // A dense sweep over the whole range.
+        for i in 0..=2_570_000_u32 {
+            check(i as f32 * 1e-4);
+        }
+    }
 
     /// Test edge extension with Duplicate mode.
     #[test]
@@ -818,6 +1289,7 @@ mod tests {
             apply_blur(
                 &mut pixmap,
                 &mut scratch,
+                &mut BlurBuffers::default(),
                 n_decimations,
                 n_decimations,
                 kernel,
@@ -854,6 +1326,7 @@ mod tests {
             apply_blur(
                 &mut pixmap,
                 &mut scratch,
+                &mut BlurBuffers::default(),
                 blur.n_decimations_x,
                 blur.n_decimations_y,
                 blur.kernel_x(),
@@ -905,6 +1378,7 @@ mod tests {
         apply_blur(
             &mut horizontal,
             &mut scratch,
+            &mut BlurBuffers::default(),
             blur_x.n_decimations_x,
             blur_x.n_decimations_y,
             blur_x.kernel_x(),
@@ -915,6 +1389,7 @@ mod tests {
         apply_blur(
             &mut vertical,
             &mut scratch,
+            &mut BlurBuffers::default(),
             blur_y.n_decimations_x,
             blur_y.n_decimations_y,
             blur_y.kernel_x(),
@@ -953,7 +1428,13 @@ mod tests {
             }
         }
 
-        let (new_width, new_height) = downscale(&mut pixmap, 5, 5, EdgeMode::Duplicate);
+        let (new_width, new_height) = downscale(
+            &mut pixmap,
+            &mut BlurBuffers::default(),
+            5,
+            5,
+            EdgeMode::Duplicate,
+        );
         // 5 / 2 = 2.5 → ceil = 3
         assert_eq!(new_width, 3);
         assert_eq!(new_height, 3);
@@ -963,7 +1444,13 @@ mod tests {
     #[test]
     fn test_upscale_dimensions() {
         let mut pixmap = Pixmap::new(6, 6);
-        let (new_width, new_height) = upscale(&mut pixmap, 3, 3, EdgeMode::Duplicate);
+        let (new_width, new_height) = upscale(
+            &mut pixmap,
+            &mut BlurBuffers::default(),
+            3,
+            3,
+            EdgeMode::Duplicate,
+        );
         // 3 * 2 = 6
         assert_eq!(new_width, 6);
         assert_eq!(new_height, 6);
@@ -986,6 +1473,7 @@ mod tests {
         convolve_x(
             &src,
             &mut dst,
+            &mut BlurBuffers::default(),
             5,
             3,
             &kernel[..usize::from(kernel_size)],
@@ -1068,7 +1556,16 @@ mod tests {
         );
 
         let kernel = [1.0]; // Identity kernel
-        convolve_x(&src, &mut dst, 3, 3, &kernel, 0, EdgeMode::None);
+        convolve_x(
+            &src,
+            &mut dst,
+            &mut BlurBuffers::default(),
+            3,
+            3,
+            &kernel,
+            0,
+            EdgeMode::None,
+        );
 
         // Should be unchanged
         assert_eq!(dst.sample(1, 1), src.sample(1, 1));
@@ -1131,15 +1628,15 @@ mod tests {
         );
 
         // Test left boundary with Duplicate
-        let mut p = sample_x(&pixmap, -1, 0, 3, EdgeMode::Duplicate);
+        let mut p = sample_row(pixmap.data(), -1, 3, EdgeMode::Duplicate);
         assert_eq!(p.r, 10); // Should clamp to first pixel
 
         // Test right boundary with Duplicate
-        p = sample_x(&pixmap, 3, 0, 3, EdgeMode::Duplicate);
+        p = sample_row(pixmap.data(), 3, 3, EdgeMode::Duplicate);
         assert_eq!(p.r, 30); // Should clamp to last pixel
 
         // Test with None mode (should return transparent black)
-        p = sample_x(&pixmap, -1, 0, 3, EdgeMode::None);
+        p = sample_row(pixmap.data(), -1, 3, EdgeMode::None);
         assert_eq!(p.a, 0);
     }
 
@@ -1179,15 +1676,15 @@ mod tests {
         );
 
         // Test top boundary with Duplicate
-        let mut p = sample_y(&pixmap, 0, -1, 3, EdgeMode::Duplicate);
+        let mut p = sample_row(pixmap.data(), -1, 3, EdgeMode::Duplicate);
         assert_eq!(p.r, 10); // Should clamp to first pixel
 
         // Test bottom boundary with Duplicate
-        p = sample_y(&pixmap, 0, 3, 3, EdgeMode::Duplicate);
+        p = sample_row(pixmap.data(), 3, 3, EdgeMode::Duplicate);
         assert_eq!(p.r, 30); // Should clamp to last pixel
 
         // Test with None mode (should return transparent black)
-        p = sample_y(&pixmap, 0, -1, 3, EdgeMode::None);
+        p = sample_row(pixmap.data(), -1, 3, EdgeMode::None);
         assert_eq!(p.a, 0);
     }
 
@@ -1218,11 +1715,23 @@ mod tests {
             a: 255,
         });
 
-        let (w1, h1) = downscale(&mut pixmap, 8, 8, EdgeMode::Duplicate);
+        let (w1, h1) = downscale(
+            &mut pixmap,
+            &mut BlurBuffers::default(),
+            8,
+            8,
+            EdgeMode::Duplicate,
+        );
         assert_eq!(w1, 4);
         assert_eq!(h1, 4);
 
-        let (w2, h2) = upscale(&mut pixmap, w1, h1, EdgeMode::Duplicate);
+        let (w2, h2) = upscale(
+            &mut pixmap,
+            &mut BlurBuffers::default(),
+            w1,
+            h1,
+            EdgeMode::Duplicate,
+        );
         assert_eq!(w2, 8);
         assert_eq!(h2, 8);
     }
@@ -1266,7 +1775,14 @@ mod tests {
         let mut pixmap = pixmap_from_red(4, 2, &[&[0, 40, 80, 120], &[20, 60, 100, 140]]);
 
         let dst_width = 4_u16.div_ceil(2);
-        downscale_x(&mut pixmap, 4, 2, dst_width, EdgeMode::Duplicate);
+        downscale_x(
+            &mut pixmap,
+            &mut BlurBuffers::default(),
+            4,
+            2,
+            dst_width,
+            EdgeMode::Duplicate,
+        );
 
         // Row 0: p[-1]=0,p[0]=0,p[1]=40,p[2]=80    → (0+0*3+40*3+80+4)>>3       = 25
         //        p[1]=40,p[2]=80,p[3]=120,p[4]=120  → (40+80*3+120*3+120+4)>>3   = 95
@@ -1285,7 +1801,14 @@ mod tests {
         let mut pixmap = pixmap_from_red(2, 4, &[&[25, 95], &[45, 115], &[35, 105], &[55, 125]]);
 
         let dst_height = 4_u16.div_ceil(2);
-        downscale_y(&mut pixmap, 2, 4, dst_height, EdgeMode::Duplicate);
+        downscale_y(
+            &mut pixmap,
+            &mut BlurBuffers::default(),
+            2,
+            4,
+            dst_height,
+            EdgeMode::Duplicate,
+        );
 
         // Col 0: p[-1]=25,p[0]=25,p[1]=45,p[2]=35 → (25+25*3+45*3+35+4)>>3   = 34
         //        p[1]=45,p[2]=35,p[3]=55,p[4]=55   → (45+35*3+55*3+55+4)>>3  = 46
@@ -1298,7 +1821,13 @@ mod tests {
     fn test_upscale_x_non_uniform() {
         let mut pixmap = pixmap_from_red(4, 2, &[&[34, 104], &[46, 116]]);
 
-        upscale_x(&mut pixmap, 2, 2, EdgeMode::Duplicate);
+        upscale_x(
+            &mut pixmap,
+            &mut BlurBuffers::default(),
+            2,
+            2,
+            EdgeMode::Duplicate,
+        );
 
         // Row 0 [34, 104]:
         //   x=0: interp25_75(34,34)=34,  interp75_25(34,104)=(34*3+104+2)>>2 = 52
@@ -1313,7 +1842,13 @@ mod tests {
     fn test_upscale_y_non_uniform() {
         let mut pixmap = pixmap_from_red(4, 4, &[&[34, 52, 87, 104], &[46, 64, 99, 116]]);
 
-        upscale_y(&mut pixmap, 4, 2, EdgeMode::Duplicate);
+        upscale_y(
+            &mut pixmap,
+            &mut BlurBuffers::default(),
+            4,
+            2,
+            EdgeMode::Duplicate,
+        );
 
         #[rustfmt::skip]
         assert_red_values(&pixmap, [

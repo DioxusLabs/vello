@@ -74,11 +74,12 @@ fn apply_drop_shadow(
 
     // Step 2: Blur the already-offset shadow
     if std_deviation > 0.0 {
-        let scratch =
-            filter_scratch.get_scratch_buffer(shadow_pixmap.width(), shadow_pixmap.height());
+        let (scratch, buffers) =
+            filter_scratch.get_blur_scratch(shadow_pixmap.width(), shadow_pixmap.height());
         apply_blur(
             &mut shadow_pixmap,
             scratch,
+            buffers,
             n_decimations,
             n_decimations,
             kernel,

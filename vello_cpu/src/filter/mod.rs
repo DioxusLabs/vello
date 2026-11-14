@@ -12,6 +12,8 @@ pub(crate) mod context;
 mod drop_shadow;
 mod flood;
 mod gaussian_blur;
+#[cfg(test)]
+mod gaussian_blur_reference;
 mod offset;
 mod shift;
 

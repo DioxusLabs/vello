@@ -396,7 +396,7 @@ impl MultiThreadedDispatcher {
         image_resolver: &dyn ImageResolver,
     ) {
         let mut bucketer = self.bucketer.lock().unwrap();
-        let filters = FilterContext::new(0);
+        let filters = FilterContext::new(0, simd.level());
         bucketer.reset(RectU16::new(0, 0, scene_width, scene_height));
         let target_init = settings.target_init.map(PremulColor::from_alpha_color);
         bucketer.bucket_commands(
