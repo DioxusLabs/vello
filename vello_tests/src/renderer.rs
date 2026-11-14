@@ -12,6 +12,7 @@ use vello_common::mask::Mask;
 use vello_common::paint::{ImageSource, PaintType, TextureRegion, Tint};
 use vello_common::peniko::{BlendMode, Fill, FontData};
 use vello_common::pixmap::Pixmap;
+use vello_common::reset::ResetOptions;
 use vello_cpu::{
     Level, RasterizerSettings, RenderContext, RenderMode, RenderSettings, Resources,
     TargetInit as CpuTargetInit,
@@ -317,7 +318,10 @@ impl Renderer for CpuRenderer {
     }
 
     fn reset_and_shrink(&mut self) {
-        self.ctx.reset_and_shrink();
+        self.ctx.reset_with(ResetOptions {
+            shrink: true,
+            ..Default::default()
+        });
     }
 
     fn set_target_init(&mut self, target_init: GpuTargetInit<'static>) {
@@ -698,7 +702,10 @@ impl Renderer for GpuRenderer {
 
     fn reset_and_shrink(&mut self) {
         self.lock_gpu_test();
-        self.scene.reset_and_shrink();
+        self.scene.reset_with(ResetOptions {
+            shrink: true,
+            ..Default::default()
+        });
         self.renderer.reset_and_shrink(&mut self.resources);
     }
 
@@ -1239,7 +1246,10 @@ impl Renderer for GpuRenderer {
     }
 
     fn reset_and_shrink(&mut self) {
-        self.scene.reset_and_shrink();
+        self.scene.reset_with(ResetOptions {
+            shrink: true,
+            ..Default::default()
+        });
         self.renderer.reset_and_shrink(&mut self.resources).unwrap();
     }
 

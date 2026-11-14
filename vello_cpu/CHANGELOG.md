@@ -15,6 +15,11 @@ This release has an [MSRV][] of 1.89.
 ### Added
 
 - `RenderContext::push_luminance_mask_layer`, which uses the luminance of the content drawn into the layer as a mask for the content below it, without pre-rasterizing a `Mask`. ([#9][] by [@nicoburns][])
+- `RenderContext::reset_with`, which resets a render context to a new size and can free the memory it grew in the same step, configured by `ResetOptions`. (by [@LaurenzV][])
+
+### Changed
+
+- Breaking change: `RenderContext::reset_and_resize` and `RenderContext::reset_and_shrink` have been removed in favor of `RenderContext::reset_with`. (by [@LaurenzV][])
 
 ## [0.4.0][] - 2026-11-11
 
