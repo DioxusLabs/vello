@@ -342,6 +342,7 @@ impl MultiThreadedDispatcher {
                                 clip_bbox,
                                 blend_mode,
                                 mask,
+                                luminance_mask,
                                 opacity,
                             } => {
                                 let clip_path = clip_path.map(|strip_range| {
@@ -361,6 +362,7 @@ impl MultiThreadedDispatcher {
                                         blend_mode,
                                         opacity,
                                         mask,
+                                        luminance_mask,
                                         clip_path,
                                     },
                                     None,
@@ -535,6 +537,7 @@ impl Dispatcher for MultiThreadedDispatcher {
         opacity: f32,
         aliasing_threshold: Option<u8>,
         mask: Option<Mask>,
+        luminance_mask: bool,
         filter_data: Option<FilterData>,
     ) {
         // TODO: Implement filter support in multi-threaded dispatcher.
@@ -557,6 +560,7 @@ impl Dispatcher for MultiThreadedDispatcher {
             blend_mode,
             opacity,
             mask,
+            luminance_mask,
             fill_rule,
             aliasing_threshold,
         });
@@ -864,6 +868,7 @@ pub(crate) enum RenderTaskType {
         blend_mode: BlendMode,
         opacity: f32,
         mask: Option<Mask>,
+        luminance_mask: bool,
         fill_rule: Fill,
         aliasing_threshold: Option<u8>,
     },
@@ -889,6 +894,7 @@ pub(crate) enum RecordedCommand {
         clip_bbox: Option<RectU16>,
         blend_mode: BlendMode,
         mask: Option<Mask>,
+        luminance_mask: bool,
         opacity: f32,
     },
     PopLayer,

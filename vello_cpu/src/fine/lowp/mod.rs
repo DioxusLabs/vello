@@ -132,6 +132,23 @@ impl<S: Simd> FineKernel<S> for U8Kernel {
         }
     }
 
+    fn luminance_to_alpha(simd: S, dest: &mut [Self::Numeric]) {
+        // The coefficients of `Mask::new_luminance` in 16-bit fixed point; they sum to 65536.
+        const R: u32 = 13933;
+        const G: u32 = 46871;
+        const B: u32 = 4732;
+
+        simd.vectorize(
+            #[inline(always)]
+            || {
+                for px in dest.as_chunks_mut::<4>().0 {
+                    let luma = u32::from(px[0]) * R + u32::from(px[1]) * G + u32::from(px[2]) * B;
+                    px[3] = ((luma + (1 << 15)) >> 16) as u8;
+                }
+            },
+        );
+    }
+
     /// Applies a painter's output to the destination buffer.
     ///
     /// Delegates to the painter's u8-specific implementation.

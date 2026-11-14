@@ -63,6 +63,7 @@ pub(crate) trait Dispatcher: Debug + Send {
         opacity: f32,
         aliasing_threshold: Option<u8>,
         mask: Option<Mask>,
+        luminance_mask: bool,
         filter_data: Option<FilterData>,
     );
     fn pop_layer(&mut self);

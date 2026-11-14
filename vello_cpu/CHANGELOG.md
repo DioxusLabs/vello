@@ -14,6 +14,7 @@ This release has an [MSRV][] of 1.89.
 
 ### Added
 
+- `RenderContext::push_luminance_mask_layer`, which uses the luminance of the content drawn into the layer as a mask for the content below it, without pre-rasterizing a `Mask`. ([#9][] by [@nicoburns][])
 - `RenderContext::reset_with`, which resets a render context to a new size and can free the memory it grew in the same step, configured by `ResetOptions`. (by [@LaurenzV][])
 
 ### Changed
@@ -300,6 +301,7 @@ See also the [vello_common 0.0.1](../vello_common/CHANGELOG.md#001---2025-05-10)
 [@yezhizhen]: https://github.com/yezhizhen
 [@zlstringham]: https://github.com/zlstringham
 
+[#9]: https://github.com/DioxusLabs/vello/pull/9
 [#1159]: https://github.com/linebender/vello/pull/1159
 [#1203]: https://github.com/linebender/vello/pull/1203
 [#1237]: https://github.com/linebender/vello/pull/1237
