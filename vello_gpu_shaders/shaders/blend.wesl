@@ -9,7 +9,6 @@ import package::helpers::geometry::{pixel_to_ndc, quad_corner};
 import package::helpers::texture::flat_index_to_texture_coord;
 import package::helpers::util::unpack_u16_pair;
 
-
 struct BlendInstance {
     @location(0) geometry_origin: u32,
     @location(1) geometry_size: u32,
