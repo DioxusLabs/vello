@@ -110,7 +110,7 @@ fn luminance_mask_gradient(start: f64, end: f64) -> Gradient {
     }
 }
 
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn luminance_mask_layer_gradient(ctx: &mut impl Renderer) {
     let rect = Rect::new(10.0, 10.0, 90.0, 90.0);
     ctx.set_paint(RED);
@@ -123,7 +123,7 @@ fn luminance_mask_layer_gradient(ctx: &mut impl Renderer) {
 
 // Columns masked with white, lime, translucent white, gray and black; the bottom strip has no
 // mask content and must be removed.
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn luminance_mask_layer_colors(ctx: &mut impl Renderer) {
     ctx.set_paint(BLUE);
     ctx.fill_rect(&Rect::new(0.0, 0.0, 100.0, 100.0));
@@ -138,7 +138,7 @@ fn luminance_mask_layer_colors(ctx: &mut impl Renderer) {
 }
 
 // Content outside of the clip path is kept, content inside of it without mask content is removed.
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn luminance_mask_layer_clipped(ctx: &mut impl Renderer) {
     ctx.set_paint(RED);
     ctx.fill_rect(&Rect::new(10.0, 10.0, 90.0, 90.0));
@@ -149,7 +149,7 @@ fn luminance_mask_layer_clipped(ctx: &mut impl Renderer) {
     ctx.pop_layer();
 }
 
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn luminance_mask_layer_unclipped(ctx: &mut impl Renderer) {
     ctx.set_paint(RED);
     ctx.fill_rect(&Rect::new(10.0, 10.0, 90.0, 90.0));
@@ -159,7 +159,7 @@ fn luminance_mask_layer_unclipped(ctx: &mut impl Renderer) {
     ctx.pop_layer();
 }
 
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn luminance_mask_layer_opacity(ctx: &mut impl Renderer) {
     let rect = Rect::new(10.0, 10.0, 90.0, 90.0);
     ctx.set_paint(RED);
@@ -171,7 +171,7 @@ fn luminance_mask_layer_opacity(ctx: &mut impl Renderer) {
 }
 
 // A luminance mask layer inside the content of another one masks only that content.
-#[vello_test(skip_gpu)]
+#[vello_test]
 fn luminance_mask_layer_nested(ctx: &mut impl Renderer) {
     let rect = Rect::new(10.0, 10.0, 90.0, 90.0);
     ctx.set_paint(RED);

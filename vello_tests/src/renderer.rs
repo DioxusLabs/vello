@@ -636,8 +636,8 @@ impl Renderer for GpuRenderer {
         self.scene.push_mask_layer(mask);
     }
 
-    fn push_luminance_mask_layer(&mut self, _: Option<&BezPath>, _: f32) {
-        unimplemented!()
+    fn push_luminance_mask_layer(&mut self, clip_path: Option<&BezPath>, opacity: f32) {
+        self.scene.push_luminance_mask_layer(clip_path, opacity);
     }
 
     fn push_filter_layer(&mut self, filter: Filter) {
@@ -1185,8 +1185,8 @@ impl Renderer for GpuRenderer {
         unimplemented!()
     }
 
-    fn push_luminance_mask_layer(&mut self, _: Option<&BezPath>, _: f32) {
-        unimplemented!()
+    fn push_luminance_mask_layer(&mut self, clip_path: Option<&BezPath>, opacity: f32) {
+        self.scene.push_luminance_mask_layer(clip_path, opacity);
     }
 
     fn push_filter_layer(&mut self, filter: Filter) {

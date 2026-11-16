@@ -528,6 +528,8 @@ pub(crate) struct BlendOp {
     pub(crate) blend_mode: BlendMode,
     /// Opacity applied to the child before sampling.
     pub(crate) opacity: f32,
+    /// Whether the luminance of the child replaces its alpha before blending.
+    pub(crate) luminance_mask: bool,
     /// Range of strips used for clipping the blend layer. If `None`, the blend spans its bbox.
     pub(crate) clip_strips: Option<Range<u32>>,
 }
@@ -817,6 +819,7 @@ mod tests {
                 blend_bbox: RectU16::new(0, 0, 16, 16),
                 blend_mode: BlendMode::default(),
                 opacity: 1.0,
+                luminance_mask: false,
                 clip_strips: None,
             },
         );

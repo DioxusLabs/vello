@@ -9,8 +9,6 @@ import package::helpers::geometry::{pixel_to_ndc, quad_corner};
 import package::helpers::texture::flat_index_to_texture_coord;
 import package::helpers::util::unpack_u16_pair;
 
-const BLEND_HAS_ALPHA = 1u << 26u;
-
 struct BlendInstance {
     @location(0) geometry_origin: u32,
     @location(1) geometry_size: u32,
@@ -95,6 +93,7 @@ fn fs_main(
     let parent_texture_index = (blend_config >> 24u) & 1u;
     let child_texture_index = (blend_config >> 25u) & 1u;
     let has_alpha = (blend_config >> 26u) & 1u;
+    let luminance_mask = (blend_config >> 27u) & 1u;
 
     var clip_coverage = 1.0;
 
@@ -123,6 +122,12 @@ fn fs_main(
     if child_local.x >= 0.0 && child_local.y >= 0.0 && child_local.x < f32(child_rect_size.x)
         && child_local.y < f32(child_rect_size.y) {
         child = child_opacity * load_layer(child_texture_index, vec2<i32>(child_texture_xy));
+    }
+
+    // Luminance of the premultiplied child replaces its alpha, using the same coefficients as
+    // `Mask::new_luminance`.
+    if luminance_mask != 0u {
+        child.a = min(dot(child.rgb, vec3<f32>(0.2126, 0.7152, 0.0722)), 1.0);
     }
 
     let composed = blend_mix_compose(backdrop, child, compose, mix_mode);

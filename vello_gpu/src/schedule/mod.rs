@@ -720,6 +720,7 @@ impl<'a, 'p> Scheduler<'a, 'p> {
                 blend_bbox,
                 blend_mode,
                 opacity,
+                luminance_mask: child_props.luminance_mask,
                 clip_strips,
             },
         );

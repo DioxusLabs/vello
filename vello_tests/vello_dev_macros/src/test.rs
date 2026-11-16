@@ -656,9 +656,10 @@ pub(crate) fn vello_test_inner(attr: TokenStream, item: TokenStream) -> TokenStr
         ),
     }
 
-    // These tests currently don't work with `vello_gpu`.
+    // These tests currently don't work with `vello_gpu`. Luminance mask layers are supported.
     args.skip_gpu |= input_fn_name_str.contains("layer_multiple_properties")
-        || input_fn_name_str.contains("mask");
+        || (input_fn_name_str.contains("mask")
+            && !input_fn_name_str.starts_with("luminance_mask_layer"));
     assert!(
         !(args.gpu_only && args.skip_gpu),
         "`gpu_only` cannot be combined with `skip_gpu`"
