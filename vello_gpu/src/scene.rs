@@ -25,7 +25,7 @@ use vello_common::paint::{Paint, PaintType, PremulColor, Tint};
 #[cfg(feature = "text")]
 use vello_common::peniko::FontData;
 use vello_common::peniko::color::palette::css::BLACK;
-use vello_common::peniko::{BlendMode, Fill, GradientKind};
+use vello_common::peniko::{BlendMode, Compose, Fill, GradientKind, Mix};
 use vello_common::record::{CommandRecorder, Drawable, LayerClip, LayerProps, PoppedLayer};
 use vello_common::render_state::RenderState;
 use vello_common::reset::ResetOptions;
@@ -749,6 +749,36 @@ impl Scene {
         mask: Option<Mask>,
         filter: Option<Filter>,
     ) {
+        self.push_layer_inner(clip_path, blend_mode, opacity, mask, filter, false);
+    }
+
+    /// Push a new luminance mask layer.
+    ///
+    /// The content drawn into the layer until the matching [`Scene::pop_layer`] is not drawn
+    /// itself. Instead, its luminance is used as a mask for the content below it, inside
+    /// `clip_path` (or the whole viewport if there is no clip). Content outside of `clip_path` is
+    /// left unchanged, and content inside of it that has no mask content drawn over it is
+    /// removed.
+    pub fn push_luminance_mask_layer(&mut self, clip_path: Option<&BezPath>, opacity: f32) {
+        self.push_layer_inner(
+            clip_path,
+            Some(BlendMode::new(Mix::Normal, Compose::DestIn)),
+            Some(opacity),
+            None,
+            None,
+            true,
+        );
+    }
+
+    fn push_layer_inner(
+        &mut self,
+        clip_path: Option<&BezPath>,
+        blend_mode: Option<BlendMode>,
+        opacity: Option<f32>,
+        mask: Option<Mask>,
+        filter: Option<Filter>,
+        luminance_mask: bool,
+    ) {
         if mask.is_some() {
             unimplemented!("mask layers are currently not supported");
         }
@@ -797,7 +827,7 @@ impl Scene {
                 blend_mode,
                 opacity: opacity.unwrap_or(1.0),
                 mask: None,
-                luminance_mask: false,
+                luminance_mask,
                 clip_path,
             },
             filter_data,

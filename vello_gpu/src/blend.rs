@@ -29,7 +29,8 @@ pub(crate) struct GpuBlendInstance {
     pub(crate) child_parent_origin: u32,
     /// Scene-space width and height of the sampled child layer, packed as `u16x2`.
     pub(crate) child_rect_size: u32,
-    /// Packed blend mode, opacity, parent/child texture indices, and alpha-presence flag.
+    /// Packed blend mode, opacity, parent/child texture indices, alpha-presence flag, and
+    /// luminance-mask flag.
     pub(crate) blend_config: u32,
 }
 
@@ -78,6 +79,7 @@ impl GpuBlendInstance {
                 blend.parent_region.texture.target.texture_parity,
                 blend.child_region.texture.target.texture_parity,
                 geometry.alpha_col_idx.is_some(),
+                blend.luminance_mask,
             ),
         }
     }
@@ -132,6 +134,7 @@ fn pack_blend_config(
     parent_texture_parity: TextureParity,
     child_texture_parity: TextureParity,
     has_alpha: bool,
+    luminance_mask: bool,
 ) -> u32 {
     pack_compose(compose)
         | (pack_mix(mix) << 8)
@@ -139,6 +142,7 @@ fn pack_blend_config(
         | (u32::from(parent_texture_parity) << 24)
         | (u32::from(child_texture_parity) << 25)
         | u32::from(has_alpha) << 26
+        | u32::from(luminance_mask) << 27
 }
 
 fn pack_mix(mix: Mix) -> u32 {
