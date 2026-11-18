@@ -3,11 +3,13 @@
 
 //! Tests to validate our snapshot testing ability
 
+use std::sync::Arc;
+
 use scenes::SimpleText;
 use vello::{
-    Scene,
+    Glyph, Scene,
     kurbo::{Affine, Circle, Rect},
-    peniko::{Brush, Fill, Gradient, color::palette},
+    peniko::{Blob, Brush, Fill, FontData, Gradient, color::palette},
 };
 use vello_research_tests::{TestParams, smoke_snapshot_test_sync};
 
@@ -73,6 +75,29 @@ fn two_emoji(use_cpu: bool) {
     smoke_snapshot_test_sync(scene, &params)
         .unwrap()
         .assert_mean_less_than(0.01);
+}
+
+#[test]
+#[cfg_attr(skip_gpu_tests, ignore)]
+fn emoji_glyph_transform() {
+    let mut scene = Scene::new();
+    let colr = include_bytes!("../../../assets/noto_color_emoji/NotoColorEmoji-Subset.ttf");
+    let bitmap = include_bytes!("../../../assets/noto_color_emoji/NotoColorEmoji-CBTF-Subset.ttf");
+    let glyph_transform = Affine::translate((4.0, 6.0))
+        * Affine::skew(0.5, 0.0)
+        * Affine::scale_non_uniform(1.25, 0.75);
+    for (data, id, x) in [(colr.as_slice(), 4, 8.0), (bitmap.as_slice(), 1, 58.0)] {
+        let font = FontData::new(Blob::new(Arc::new(data)), 0);
+        scene
+            .draw_glyphs(&font)
+            .font_size(32.0)
+            .transform(Affine::translate((6.0, 8.0)))
+            .glyph_transform(Some(glyph_transform))
+            .draw(Fill::NonZero, [Glyph { id, x, y: 32.0 }].into_iter());
+    }
+    smoke_snapshot_test_sync(scene, &TestParams::new("emoji_glyph_transform", 122, 46))
+        .unwrap()
+        .assert_mean_less_than(0.002);
 }
 
 fn glyph_gradient_brush_transform(use_cpu: bool) {

@@ -525,9 +525,9 @@ impl<'a> DrawGlyphs<'a> {
         self
     }
 
-    /// Sets the per-glyph transform. This is applied to all glyphs prior to
-    /// offset translation. This is common used for applying a shear to simulate
-    /// an oblique font.
+    /// Sets the per-glyph transform in y-up space about each glyph's origin.
+    /// It applies after font sizing but before glyph placement. A shear can be
+    /// used to simulate an oblique font.
     ///
     /// The default value is `None`.
     #[must_use]
@@ -668,6 +668,10 @@ impl<'a> DrawGlyphs<'a> {
         let font = skrifa::FontRef::from_index(blob.as_ref(), font_index).unwrap();
         let upem: f32 = font.head().map(|h| h.units_per_em()).unwrap().into();
         let run_transform = self.run.transform.to_kurbo();
+        let glyph_transform = self
+            .run
+            .glyph_transform
+            .map(|transform| Affine::FLIP_Y * transform.to_kurbo() * Affine::FLIP_Y);
         let colr_scale = Affine::scale_non_uniform(
             (self.run.font_size / upem).into(),
             (-self.run.font_size / upem).into(),
@@ -714,6 +718,11 @@ impl<'a> DrawGlyphs<'a> {
                 break;
             };
 
+            let mut transform =
+                run_transform.pre_translate(Vec2::new(glyph.x.into(), glyph.y.into()));
+            if let Some(glyph_transform) = glyph_transform {
+                transform *= glyph_transform;
+            }
             match emoji {
                 // TODO: This really needs to be moved to resolve time to get proper caching, etc.
                 EmojiLikeGlyph::Bitmap(bitmap) => {
@@ -808,9 +817,6 @@ impl<'a> DrawGlyphs<'a> {
                         }
                     };
                     let image = ImageBrush::new(image).multiply_alpha(self.brush_alpha);
-                    // Split into multiple statements because rustfmt breaks
-                    let transform =
-                        run_transform.pre_translate(Vec2::new(glyph.x.into(), glyph.y.into()));
 
                     // Logic copied from Skia without examination or careful understanding:
                     // https://github.com/google/skia/blob/61ac357e8e3338b90fb84983100d90768230797f/src/ports/SkTypeface_fontations.cpp#L664
@@ -838,27 +844,17 @@ impl<'a> DrawGlyphs<'a> {
                             x: bitmap.inner_bearing_x.into(),
                             y: (-bitmap.inner_bearing_y).into(),
                         });
-                    let mut transform = match bitmap.placement_origin {
+                    let transform = match bitmap.placement_origin {
                         bitmap::Origin::TopLeft => transform,
                         bitmap::Origin::BottomLeft => transform.pre_translate(Vec2 {
                             x: 0.,
                             y: -f64::from(image.image.height),
                         }),
                     };
-                    if let Some(glyph_transform) = self.run.glyph_transform {
-                        transform *= glyph_transform.to_kurbo();
-                    }
                     self.scene.draw_image(image.as_ref(), transform);
                 }
                 EmojiLikeGlyph::Colr(colr) => {
-                    let transform = run_transform
-                        * Affine::translate(Vec2::new(glyph.x.into(), glyph.y.into()))
-                        * colr_scale
-                        * self
-                            .run
-                            .glyph_transform
-                            .unwrap_or(Transform::IDENTITY)
-                            .to_kurbo();
+                    let transform = transform * colr_scale;
                     colr.paint(
                         location,
                         &mut DrawColorGlyphs {

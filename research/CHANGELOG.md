@@ -12,6 +12,10 @@ Subheadings to categorize changes are `added, changed, deprecated, removed, fixe
 
 This release has an [MSRV][] of 1.89.
 
+### Fixed
+
+- Apply per-glyph transforms to COLR and bitmap glyphs in the same sized, y-up glyph space as outlines.
+
 ## [0.12.0][] - 2026-11-11
 
 This release has an [MSRV][] of 1.89.
